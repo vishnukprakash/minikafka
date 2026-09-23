@@ -6,7 +6,9 @@
 
 **Architecture:** A single JVM process layers a thread-per-connection TCP server over an in-process `Broker`, which routes requests to one `Log` per topic-partition (segmented, index-assisted append-only files on disk). A `MiniKafkaClient` speaks the same wire protocol and backs both the CLI and the integration tests.
 
-**Tech Stack:** Kotlin 2.0.21 (JVM), Gradle 8.10.2 (wrapper already cached locally), JUnit 5.10.3. No third-party runtime dependencies — only the JDK standard library (`java.io`, `java.net`).
+**Tech Stack:** Kotlin 2.4.10 (JVM), Gradle 8.10.2 (wrapper already cached locally), JUnit 5.10.3. No third-party runtime dependencies — only the JDK standard library (`java.io`, `java.net`).
+
+> **Ruling (Task 1, recorded during implementation):** originally specified as Kotlin 2.0.21, but that version hard-fails (`IllegalArgumentException: 26.0.2`) under this machine's JDK 26 — the only JDK installed. Bumped to 2.4.10, the version the standalone `kotlin` CLI already confirmed to run cleanly under JRE 26.0.2, rather than pinning the build to an incidental local JDK 21 install.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-minikafka-design.md`
 
@@ -97,7 +99,7 @@ rootProject.name = "minikafka"
 
 ```kotlin
 plugins {
-    kotlin("jvm") version "2.0.21"
+    kotlin("jvm") version "2.4.10"
     application
 }
 
