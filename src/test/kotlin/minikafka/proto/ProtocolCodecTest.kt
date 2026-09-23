@@ -2,6 +2,8 @@ package minikafka.proto
 
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -37,6 +39,14 @@ class ProtocolCodecTest {
         assertEquals("k", String(req.key!!))
         assertEquals("v", String(req.value))
 
+        val reqNullKey = roundTrip(
+            { ProduceRequest("t", null, "v".toByteArray()).encode(it) },
+            { ProduceRequest.decode(it) }
+        )
+        assertEquals("t", reqNullKey.topic)
+        assertNull(reqNullKey.key)
+        assertEquals("v", String(reqNullKey.value))
+
         val resp = roundTrip(
             { ProduceResponse(ErrorCodes.NONE, 2, 10L).encode(it) },
             { ProduceResponse.decode(it) }
@@ -59,6 +69,15 @@ class ProtocolCodecTest {
         )
         assertEquals(1, resp.records.size)
         assertEquals("v", String(resp.records[0].value))
+
+        val recordsWithKey = listOf(FetchedRecord(0L, 1000L, "k".toByteArray(), "v".toByteArray()))
+        val respWithKey = roundTrip(
+            { FetchResponse(ErrorCodes.NONE, recordsWithKey).encode(it) },
+            { FetchResponse.decode(it) }
+        )
+        assertEquals(1, respWithKey.records.size)
+        assertEquals("k", String(respWithKey.records[0].key!!))
+        assertEquals("v", String(respWithKey.records[0].value))
     }
 
     @Test
@@ -74,5 +93,41 @@ class ProtocolCodecTest {
             { OffsetFetchResponse.decode(it) }
         )
         assertEquals(OffsetFetchResponse(ErrorCodes.NONE, 7L), fetchResp)
+    }
+
+    @Test
+    fun `round trips MetadataRequest`() {
+        val decoded = roundTrip(
+            { MetadataRequest().encode(it) },
+            { MetadataRequest.decode(it) }
+        )
+        assertNotNull(decoded)
+    }
+
+    @Test
+    fun `round trips OffsetFetchRequest`() {
+        val decoded = roundTrip(
+            { OffsetFetchRequest("g", "t", 0).encode(it) },
+            { OffsetFetchRequest.decode(it) }
+        )
+        assertEquals(OffsetFetchRequest("g", "t", 0), decoded)
+    }
+
+    @Test
+    fun `round trips CreateTopicResponse`() {
+        val decoded = roundTrip(
+            { CreateTopicResponse(ErrorCodes.NONE).encode(it) },
+            { CreateTopicResponse.decode(it) }
+        )
+        assertEquals(CreateTopicResponse(ErrorCodes.NONE), decoded)
+    }
+
+    @Test
+    fun `round trips OffsetCommitResponse`() {
+        val decoded = roundTrip(
+            { OffsetCommitResponse(ErrorCodes.NONE).encode(it) },
+            { OffsetCommitResponse.decode(it) }
+        )
+        assertEquals(OffsetCommitResponse(ErrorCodes.NONE), decoded)
     }
 }
