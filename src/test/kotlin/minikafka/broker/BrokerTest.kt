@@ -61,4 +61,29 @@ class BrokerTest {
         assertEquals(ErrorCodes.NONE, errorCode)
         assertEquals(5L, offset)
     }
+
+    @Test
+    fun `recovers topic registry and data on restart with hyphenated topic name`(@TempDir tempDir: File) {
+        // First broker: create topic and produce message
+        val broker1 = Broker(tempDir)
+        assertEquals(ErrorCodes.NONE, broker1.createTopic("my-topic", 2))
+        val (_, partition, offset) = broker1.produce("my-topic", null, "test-message".toByteArray())
+        assertEquals(0L, offset)
+
+        // Second broker: simulates restart, should recover topic and data
+        val broker2 = Broker(tempDir)
+
+        // Verify topic metadata is recovered
+        val topics = broker2.listTopics()
+        assertEquals(1, topics.size)
+        val metadata = topics.first()
+        assertEquals("my-topic", metadata.name)
+        assertEquals(2, metadata.numPartitions)
+
+        // Verify data is recovered
+        val (errorCode, records) = broker2.fetch("my-topic", partition, 0L, 1024)
+        assertEquals(ErrorCodes.NONE, errorCode)
+        assertEquals(1, records.size)
+        assertEquals("test-message".toByteArray().contentToString(), records[0].value.contentToString())
+    }
 }

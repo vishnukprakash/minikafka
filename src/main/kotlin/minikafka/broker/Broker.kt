@@ -35,10 +35,9 @@ class Broker(private val dataDir: File) {
     }
 
     fun createTopic(topic: String, numPartitions: Int): Short {
-        if (topics.containsKey(topic)) return ErrorCodes.TOPIC_ALREADY_EXISTS
         val logs = (0 until numPartitions).map { p -> Log(File(dataDir, "$topic-$p")) }
-        topics[topic] = TopicState(numPartitions, logs)
-        return ErrorCodes.NONE
+        val existing = topics.putIfAbsent(topic, TopicState(numPartitions, logs))
+        return if (existing != null) ErrorCodes.TOPIC_ALREADY_EXISTS else ErrorCodes.NONE
     }
 
     fun listTopics(): List<TopicMetadata> =
