@@ -30,5 +30,6 @@ class Server(private val port: Int, private val dataDir: File) {
     fun stop() {
         running = false
         serverSocket.close()
+        broker.close()
     }
 }

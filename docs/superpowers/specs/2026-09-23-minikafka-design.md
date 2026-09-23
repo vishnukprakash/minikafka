@@ -50,8 +50,8 @@ APIs:
 |---|---|---|---|
 | 1 | CREATE_TOPIC | topic:string, numPartitions:int32 | errorCode:int16 |
 | 2 | METADATA | (empty) | topicCount:int32, then per topic: name:string, numPartitions:int32 |
-| 3 | PRODUCE | topic:string, key:nullable-string, value:string | errorCode:int16, partition:int32, offset:int64 |
-| 4 | FETCH | topic:string, partition:int32, offset:int64, maxBytes:int32 | errorCode:int16, recordCount:int32, then records: offset:int64, timestamp:int64, key:nullable-string, value:string |
+| 3 | PRODUCE | topic:string, key:nullable-bytes, value:bytes | errorCode:int16, partition:int32, offset:int64 |
+| 4 | FETCH | topic:string, partition:int32, offset:int64, maxBytes:int32 | errorCode:int16, recordCount:int32, then records: offset:int64, timestamp:int64, key:nullable-bytes, value:bytes |
 | 5 | OFFSET_COMMIT | group:string, topic:string, partition:int32, offset:int64 | errorCode:int16 |
 | 6 | OFFSET_FETCH | group:string, topic:string, partition:int32 | errorCode:int16, offset:int64 (-1 if none committed) |
 

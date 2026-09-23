@@ -69,6 +69,10 @@ private fun runProduce(args: List<String>) {
     val value = args.lastOrNull()?.takeIf { !it.startsWith("--") } ?: printUsageAndExit()
     MiniKafkaClient(host, port).use { client ->
         val response = client.produce(topic, key?.toByteArray(), value.toByteArray())
+        if (response.errorCode.toInt() != 0) {
+            System.err.println("error producing: code ${response.errorCode}")
+            kotlin.system.exitProcess(1)
+        }
         println("produced to partition ${response.partition} at offset ${response.offset}")
     }
 }
@@ -88,6 +92,10 @@ private fun runConsume(args: List<String>) {
         }
         while (true) {
             val response = client.fetch(topic, partition, offset, 1024 * 1024)
+            if (response.errorCode.toInt() != 0) {
+                System.err.println("error fetching: code ${response.errorCode}")
+                kotlin.system.exitProcess(1)
+            }
             if (response.records.isEmpty()) break
             for (record in response.records) {
                 val key = record.key?.toString(Charsets.UTF_8)

@@ -31,5 +31,9 @@ out of scope).
 ./gradlew run --args="consume --topic demo --partition 0 --group my-group"
 ```
 
+Note: `consume` fetches until it catches up to the log's current end offset
+and then exits — it does not "tail" the log waiting for new messages to
+arrive, unlike a typical `kafka-console-consumer`.
+
 All commands accept `--host`/`--port` to target a broker other than
 `localhost:9092`.

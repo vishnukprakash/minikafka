@@ -59,9 +59,11 @@ log layer from needing to depend on the protocol layer, and vice versa.
 
 **Dependency direction (strict):** `server` → `broker` → `log`, and
 `server`/`broker` → `proto`. `proto` and `log` both depend only on `io`, and
-never on each other. `cli`/`client` depend only on `proto` (for the wire
-format) — the client never touches `log` or `broker` directly, exactly as a
-real Kafka client wouldn't link against broker-internal code.
+never on each other. `client` depends only on `proto` (for the wire format) —
+the client never touches `log` or `broker` directly, exactly as a real Kafka
+client wouldn't link against broker-internal code. `cli` depends on both
+`server` (to run the `server` subcommand) and `client` (for the other
+subcommands).
 
 ## Wire protocol
 

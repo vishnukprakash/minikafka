@@ -35,9 +35,13 @@ class Broker(private val dataDir: File) {
     }
 
     fun createTopic(topic: String, numPartitions: Int): Short {
-        val logs = (0 until numPartitions).map { p -> Log(File(dataDir, "$topic-$p")) }
-        val existing = topics.putIfAbsent(topic, TopicState(numPartitions, logs))
-        return if (existing != null) ErrorCodes.TOPIC_ALREADY_EXISTS else ErrorCodes.NONE
+        var created = false
+        topics.computeIfAbsent(topic) {
+            created = true
+            val logs = (0 until numPartitions).map { p -> Log(File(dataDir, "$topic-$p")) }
+            TopicState(numPartitions, logs)
+        }
+        return if (created) ErrorCodes.NONE else ErrorCodes.TOPIC_ALREADY_EXISTS
     }
 
     fun listTopics(): List<TopicMetadata> =
@@ -53,6 +57,10 @@ class Broker(private val dataDir: File) {
     fun fetch(topic: String, partition: Int, offset: Long, maxBytes: Int): Pair<Short, List<Record>> {
         val state = topics[topic] ?: return ErrorCodes.UNKNOWN_TOPIC to emptyList()
         if (partition < 0 || partition >= state.numPartitions) return ErrorCodes.UNKNOWN_PARTITION to emptyList()
+        val logEndOffset = state.logs[partition].logEndOffset()
+        if (offset < 0 || offset > logEndOffset) {
+            return ErrorCodes.OFFSET_OUT_OF_RANGE to emptyList()
+        }
         return ErrorCodes.NONE to state.logs[partition].read(offset, maxBytes)
     }
 
@@ -63,6 +71,10 @@ class Broker(private val dataDir: File) {
 
     fun fetchOffset(group: String, topic: String, partition: Int): Pair<Short, Long> =
         ErrorCodes.NONE to offsetStore.fetch(group, topic, partition)
+
+    fun close() {
+        topics.values.forEach { state -> state.logs.forEach { log -> log.close() } }
+    }
 
     private fun choosePartition(topic: String, key: ByteArray?, numPartitions: Int): Int {
         if (key != null) {

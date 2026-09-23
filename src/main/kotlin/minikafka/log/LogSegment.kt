@@ -75,6 +75,7 @@ class LogSegment(
         return records
     }
 
+    @Synchronized
     fun close() {
         raf.close()
     }

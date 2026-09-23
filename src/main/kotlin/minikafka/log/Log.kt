@@ -42,8 +42,10 @@ class Log(
         return segment.read(offset, maxBytes)
     }
 
+    @Synchronized
     fun logEndOffset(): Long = activeSegment().nextOffset
 
+    @Synchronized
     fun close() {
         segments.forEach { it.close() }
     }
