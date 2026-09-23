@@ -66,7 +66,7 @@ private fun runProduce(args: List<String>) {
     val port = (flag(args, "--port") ?: "9092").toInt()
     val topic = flag(args, "--topic") ?: printUsageAndExit()
     val key = flag(args, "--key")
-    val value = args.last()
+    val value = args.lastOrNull()?.takeIf { !it.startsWith("--") } ?: printUsageAndExit()
     MiniKafkaClient(host, port).use { client ->
         val response = client.produce(topic, key?.toByteArray(), value.toByteArray())
         println("produced to partition ${response.partition} at offset ${response.offset}")
@@ -79,11 +79,12 @@ private fun runConsume(args: List<String>) {
     val topic = flag(args, "--topic") ?: printUsageAndExit()
     val partition = (flag(args, "--partition") ?: "0").toInt()
     val group = flag(args, "--group")
+    val fromBeginning = args.contains("--from-beginning")
     MiniKafkaClient(host, port).use { client ->
-        var offset = if (group != null) {
-            client.fetchOffset(group, topic, partition).let { if (it < 0) 0L else it }
-        } else {
-            0L
+        var offset = when {
+            fromBeginning -> 0L
+            group != null -> client.fetchOffset(group, topic, partition).let { if (it < 0) 0L else it }
+            else -> 0L
         }
         while (true) {
             val response = client.fetch(topic, partition, offset, 1024 * 1024)
