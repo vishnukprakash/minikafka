@@ -6,9 +6,9 @@
 
 **Architecture:** A single JVM process layers a thread-per-connection TCP server over an in-process `Broker`, which routes requests to one `Log` per topic-partition (segmented, index-assisted append-only files on disk). A `MiniKafkaClient` speaks the same wire protocol and backs both the CLI and the integration tests.
 
-**Tech Stack:** Kotlin 2.4.10 (JVM), Gradle 8.10.2 (wrapper already cached locally), JUnit 5.10.3. No third-party runtime dependencies — only the JDK standard library (`java.io`, `java.net`).
+**Tech Stack:** Kotlin 2.4.10 (JVM), Gradle 9.7.1, JUnit 5.10.3. No third-party runtime dependencies — only the JDK standard library (`java.io`, `java.net`).
 
-> **Ruling (Task 1, recorded during implementation):** originally specified as Kotlin 2.0.21, but that version hard-fails (`IllegalArgumentException: 26.0.2`) under this machine's JDK 26 — the only JDK installed. Bumped to 2.4.10, the version the standalone `kotlin` CLI already confirmed to run cleanly under JRE 26.0.2, rather than pinning the build to an incidental local JDK 21 install. (Superseded/refined by the round-2 ruling in Task 1 below: the version bump alone wasn't sufficient — the build files also had to move from Kotlin DSL to Groovy DSL.)
+> **Ruling (Task 1, recorded during implementation — final):** originally specified as Kotlin 2.0.21 on the sibling project's cached Gradle 8.10.2 wrapper. That combination hard-fails under this machine's JDK 26 (the only JDK installed) two different ways: Kotlin 2.0.21 itself throws `IllegalArgumentException: 26.0.2`, and even after bumping to Kotlin 2.4.10, Gradle 8.10.2's own bundled tooling (its embedded Kotlin-script compiler, and/or its bundled bytecode-reading library) can't handle either JDK 26's version string or classfiles built for it — this reproduced identically under both Kotlin DSL and Groovy DSL build files, ruling out the DSL choice as the cause. The actual fix, verified empirically in a throwaway scratch project before committing to it: **bump the Gradle wrapper itself from 8.10.2 to 9.7.1** (the genuinely current stable release, confirmed via `https://services.gradle.org/versions/current`). Under Gradle 9.7.1 with Kotlin plugin 2.4.10, both Kotlin DSL and Groovy DSL build cleanly on this machine's default JDK 26 with zero workarounds (no toolchain, no gradle.properties, no JAVA_HOME override) — confirmed by directly running `./gradlew build` end-to-end in a scratch test, twice, once per DSL. Task 1 below uses Kotlin DSL (`build.gradle.kts`/`settings.gradle.kts`), the originally-intended, more idiomatic choice for an all-Kotlin project, now that it's confirmed to work.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-minikafka-design.md`
 
@@ -27,8 +27,8 @@
 
 ```
 minikafka/
-  build.gradle             (Groovy DSL — see Task 1's ruling on why not .gradle.kts)
-  settings.gradle
+  build.gradle.kts
+  settings.gradle.kts
   .gitignore
   gradlew, gradlew.bat, gradle/wrapper/{gradle-wrapper.jar,gradle-wrapper.properties}
   README.md
@@ -66,17 +66,15 @@ minikafka/
 ### Task 1: Project scaffolding
 
 **Files:**
-- Create: `build.gradle`
-- Create: `settings.gradle`
+- Create: `build.gradle.kts`
+- Create: `settings.gradle.kts`
 - Create: `.gitignore`
-- Create: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`, `gradle/wrapper/gradle-wrapper.properties` (copied from the sibling `ds-patterns-workshop` project, which already has a working Gradle 8.10.2 wrapper cached locally)
+- Create: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`, `gradle/wrapper/gradle-wrapper.properties` (copied from the sibling `ds-patterns-workshop` project's wrapper *scripts*, then the wrapper's version is bumped to Gradle 9.7.1 — see the ruling above)
 
 **Interfaces:**
 - Produces: a buildable, empty Gradle Kotlin project named `minikafka` that later tasks add sources to.
 
-> **Ruling (Task 1, recorded during implementation, round 2):** the build files are Groovy DSL (`build.gradle`/`settings.gradle`), not Kotlin DSL (`.gradle.kts`). Bumping the `kotlin("jvm")` plugin version alone did not fix the JDK 26 crash — the failure is `java.lang.IllegalArgumentException: 26.0.2` inside Gradle 8.10.2's own embedded Kotlin-script compiler (bundled Kotlin 1.9.24, used only to parse `.gradle.kts` files), which happens before the project's own declared Kotlin plugin version is ever resolved. The sibling `ds-patterns-workshop` project already proves Groovy build files work fine under this same JDK 26/Gradle 8.10.2 combination, because Groovy DSL never invokes that embedded Kotlin-script compiler. This only changes how the *build* is configured — all of minikafka's own source code is still Kotlin, compiled by the Kotlin Gradle plugin (2.4.10) applied from `build.gradle`, which resolves its own compiler from Maven Central independent of Gradle's bundled one.
-
-- [ ] **Step 1: Copy the Gradle wrapper from the sibling project**
+- [ ] **Step 1: Copy the Gradle wrapper scripts from the sibling project, then bump the wrapper version**
 
 ```bash
 mkdir -p /Users/vishnuprakash/Documents/distributed-systems/minikafka/gradle/wrapper
@@ -91,38 +89,44 @@ cp /Users/vishnuprakash/Documents/distributed-systems/ds-patterns-workshop/gradl
 chmod +x /Users/vishnuprakash/Documents/distributed-systems/minikafka/gradlew
 ```
 
-- [ ] **Step 2: Write `settings.gradle`**
+Then edit `gradle/wrapper/gradle-wrapper.properties` and change the `distributionUrl` line from
+`https\://services.gradle.org/distributions/gradle-8.10.2-bin.zip` to
+`https\://services.gradle.org/distributions/gradle-9.7.1-bin.zip` (this Gradle version is already
+cached in `~/.gradle/wrapper/dists/` on this machine from verifying this ruling, so the wrapper
+should not need to re-download it).
 
-```groovy
-rootProject.name = 'minikafka'
+- [ ] **Step 2: Write `settings.gradle.kts`**
+
+```kotlin
+rootProject.name = "minikafka"
 ```
 
-- [ ] **Step 3: Write `build.gradle`**
+- [ ] **Step 3: Write `build.gradle.kts`**
 
-```groovy
+```kotlin
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '2.4.10'
-    id 'application'
+    kotlin("jvm") version "2.4.10"
+    application
 }
 
-group = 'minikafka'
-version = '0.1.0'
+group = "minikafka"
+version = "0.1.0"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    testImplementation platform('org.junit:junit-bom:5.10.3')
-    testImplementation 'org.junit.jupiter:junit-jupiter'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation(platform("org.junit:junit-bom:5.10.3"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 application {
-    mainClass = 'minikafka.cli.CliKt'
+    mainClass.set("minikafka.cli.CliKt")
 }
 
-test {
+tasks.test {
     useJUnitPlatform()
 }
 ```
@@ -140,13 +144,13 @@ data/
 - [ ] **Step 5: Verify the empty project builds**
 
 Run: `./gradlew build`
-Expected: `BUILD SUCCESSFUL` (no sources yet, so this just validates plugin resolution and wrapper setup — this is the scaffolding task's substitute for a failing test, since there's no code yet to test). Must succeed using this machine's default JVM as-is, with no `gradle.properties`/`JAVA_HOME` workaround.
+Expected: `BUILD SUCCESSFUL` (no sources yet, so this just validates plugin resolution and wrapper setup — this is the scaffolding task's substitute for a failing test, since there's no code yet to test). Must succeed using this machine's default JVM as-is, with no `gradle.properties`/`JAVA_HOME` workaround — this is already verified to work (see the ruling above), so a failure here means something in this task's steps was copied incorrectly, not that the environment needs another workaround.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/vishnuprakash/Documents/distributed-systems/minikafka
-git add build.gradle settings.gradle .gitignore gradlew gradlew.bat gradle/
+git add build.gradle.kts settings.gradle.kts .gitignore gradlew gradlew.bat gradle/
 git commit -m "Scaffold minikafka Gradle/Kotlin project"
 ```
 
@@ -1996,7 +2000,7 @@ git commit -m "Add end-to-end integration test driving the broker over a real TC
 
 **Interfaces:**
 - Consumes: `Server` (Task 10), `MiniKafkaClient` (Task 11).
-- Produces: `fun main(args: Array<String>)` — the `application` plugin's entry point (`minikafka.cli.CliKt`, matching `build.gradle`'s `mainClass`), dispatching `server`, `topics create|list`, `produce`, `consume` subcommands.
+- Produces: `fun main(args: Array<String>)` — the `application` plugin's entry point (`minikafka.cli.CliKt`, matching `build.gradle.kts`'s `mainClass`), dispatching `server`, `topics create|list`, `produce`, `consume` subcommands.
 
 - [ ] **Step 1: Write the implementation**
 
