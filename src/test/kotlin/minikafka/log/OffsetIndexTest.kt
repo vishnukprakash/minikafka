@@ -54,4 +54,26 @@ class OffsetIndexTest {
         assertEquals(0L, file.length())
         assertEquals(0, index.lookup(1000L))
     }
+
+    @Test
+    fun `an index with a non-zero base offset looks up and truncates by relative offset`(@TempDir tempDir: File) {
+        val file = File(tempDir, "00000000000000000100.index")
+        val index = OffsetIndex(file, baseOffset = 100L)
+        index.append(offset = 110L, position = 50)
+        index.append(offset = 120L, position = 90)
+        assertEquals(0, index.lookup(105L))
+        assertEquals(50, index.lookup(115L))
+        assertEquals(90, index.lookup(120L))
+        val reloaded = OffsetIndex(file, baseOffset = 100L)
+        assertEquals(50, reloaded.lookup(115L))
+        assertEquals(90, reloaded.lookup(125L))
+
+        index.truncateTo(115L) // keeps 110, drops 120
+        assertEquals(8L, file.length())
+        assertEquals(50, index.lookup(130L))
+        assertEquals(50, OffsetIndex(file, baseOffset = 100L).lookup(130L))
+
+        index.truncateTo(110L)
+        assertEquals(0L, file.length())
+    }
 }

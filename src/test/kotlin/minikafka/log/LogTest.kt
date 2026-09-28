@@ -442,4 +442,48 @@ class LogTest {
         assertEquals(listOf(2L), log.read(2L, 1, maxOffsetExclusive = 5L).map { it.offset })
         log.close()
     }
+
+    @Test
+    fun `records with an empty value and an empty key survive a reopen along with everything after them`(@TempDir tempDir: File) {
+        val dir = File(tempDir, "t-0")
+        val log = Log(dir)
+        log.append(1000L, null, "a".toByteArray())
+        log.append(1001L, null, ByteArray(0))
+        log.append(1002L, ByteArray(0), ByteArray(0))
+        log.append(1003L, "k".toByteArray(), "d".toByteArray())
+        log.close()
+
+        val reopened = Log(dir)
+        assertEquals(4L, reopened.logEndOffset())
+        val records = reopened.read(0L, maxBytes = 1 shl 20)
+        assertEquals(listOf(0L, 1L, 2L, 3L), records.map { it.offset })
+        assertEquals(0, records[1].value.size)
+        assertEquals(null, records[1].key)
+        assertEquals(0, records[2].key!!.size)
+        assertEquals("d", String(records[3].value))
+        reopened.close()
+    }
+
+    @Test
+    fun `read at a negative offset is empty`(@TempDir tempDir: File) {
+        val log = Log(File(tempDir, "t-0"))
+        log.append(1000L, null, "a".toByteArray())
+        assertTrue(log.read(-1L, maxBytes = 1 shl 20).isEmpty())
+        log.close()
+    }
+
+    @Test
+    fun `timestamps and leader epochs are stored per record and survive a reopen`(@TempDir tempDir: File) {
+        val dir = File(tempDir, "t-0")
+        val log = Log(dir)
+        log.appendAsLeader(1234L, null, "a".toByteArray(), leaderEpoch = 0)
+        log.appendAsLeader(5678L, null, "b".toByteArray(), leaderEpoch = 3)
+        assertEquals(listOf(1234L, 5678L), log.read(0L, maxBytes = 1 shl 20).map { it.timestamp })
+        log.close()
+        val reopened = Log(dir)
+        val records = reopened.read(0L, maxBytes = 1 shl 20)
+        assertEquals(listOf(1234L, 5678L), records.map { it.timestamp })
+        assertEquals(listOf(0, 3), records.map { it.leaderEpoch })
+        reopened.close()
+    }
 }

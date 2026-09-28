@@ -2,6 +2,7 @@ package minikafka.log
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class LeaderEpochCacheTest {
     private fun cacheOf(vararg entries: Pair<Int, Long>): LeaderEpochCache {
@@ -83,5 +84,14 @@ class LeaderEpochCacheTest {
         cache.truncateFromEnd(10L)
         cache.assign(2, 10L)
         assertEquals(listOf(0 to 0L, 2 to 10L), cache.entries())
+    }
+
+    @Test
+    fun `a newer epoch whose start offset precedes the latest start is rejected, an equal start is allowed`() {
+        val cache = cacheOf(1 to 5L)
+        assertThrows<IllegalArgumentException> { cache.assign(2, 3L) }
+        assertEquals(listOf(1 to 5L), cache.entries())
+        cache.assign(2, 5L)
+        assertEquals(listOf(1 to 5L, 2 to 5L), cache.entries())
     }
 }
