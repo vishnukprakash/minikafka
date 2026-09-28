@@ -115,7 +115,7 @@ class ReplicaFetcher internal constructor(
 
     val isAlive: Boolean get() = thread.isAlive
 
-    private enum class Step { CONTINUE, IDLE, ERROR, REHANDSHAKE, STOP }
+    private enum class Step { HANDSHAKE_DONE, CONTINUE, IDLE, ERROR, REHANDSHAKE, STOP }
 
     /** A non-NONE OFFSETS_FOR_LEADER_EPOCH answer, thrown out of the handshake's leader query (Task 8 contract). */
     private class LeaderError(val code: Short) : RuntimeException("leader answered error $code", null, false, false)
@@ -178,6 +178,9 @@ class ReplicaFetcher internal constructor(
                     Step.ERROR
                 }
                 when (step) {
+                    // A handshake alone is not progress: only a FETCH answered NONE resets the error
+                    // backoff, so repeated OFFSET_OUT_OF_RANGE / rejected-batch cycles still escalate.
+                    Step.HANDSHAKE_DONE -> Unit
                     Step.CONTINUE -> errorBackoffMs = settings.backoffMs
                     Step.IDLE -> {
                         errorBackoffMs = settings.backoffMs
@@ -225,7 +228,7 @@ class ReplicaFetcher internal constructor(
         if (outcome.errorCode != ErrorCodes.NONE) return localRoleChanged(outcome.errorCode)
         // The final round may answer NONE without re-checking our epoch: FETCH fencing covers that.
         needHandshake = false
-        return Step.CONTINUE
+        return Step.HANDSHAKE_DONE
     }
 
     private fun fetchOnce(c: LeaderClient): Step {

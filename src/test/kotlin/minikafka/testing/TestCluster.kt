@@ -173,8 +173,17 @@ class TestCluster(
         state.leader
     }
 
+    /**
+     * Waits until ZooKeeper's ISR is [expected] *and* the (running) leader has applied it locally
+     * (its committedIsr): the isr-updater CASes ZooKeeper first and updates the leader afterwards.
+     */
     fun awaitIsr(topic: String, partition: Int, expected: Set<Int>, timeout: Duration = 15.seconds) = eventually(timeout) {
-        assertEquals(expected, partitionState(topic, partition)?.value?.isr?.toSet(), "ISR of $topic-$partition")
+        val state = partitionState(topic, partition)?.value
+        assertEquals(expected, state?.isr?.toSet(), "ISR of $topic-$partition in ZooKeeper")
+        if (state!!.leader >= 0 && isRunning(state.leader)) {
+            val local = broker(state.leader).snapshot().partitions.firstOrNull { it.tp == TopicPartition(topic, partition) }
+            assertEquals(expected, local?.committedIsr?.toSet(), "committed ISR of $topic-$partition on leader ${state.leader}")
+        }
     }
 
     /**

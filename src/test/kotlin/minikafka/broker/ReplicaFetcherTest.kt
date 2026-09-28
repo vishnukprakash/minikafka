@@ -185,6 +185,34 @@ class ReplicaFetcherTest {
     }
 
     @Test
+    fun `repeated OFFSET_OUT_OF_RANGE cycles escalate the error backoff despite successful handshakes`() {
+        roles()
+        repeat(2) { leader.produce("m$it") }
+        startFetcher()
+        eventually(5.seconds) { assertEquals(2L, follower.state().logEndOffset) }
+        backoffs.clear()
+        repeat(4) { fetchFaults += { FetchResponse(ErrorCodes.OFFSET_OUT_OF_RANGE, -1L, emptyList()) } }
+        eventually(5.seconds) { assertTrue(epochRequests.size >= 4 && backoffs.any { it.first == FetcherBackoff.EMPTY }) }
+        assertEquals(listOf(5L, 10L, 20L, 20L), backoffs.filter { it.first == FetcherBackoff.ERROR }.map { it.second })
+        // ...and a FETCH answered NONE resets it.
+        fetchFaults += { FetchResponse(ErrorCodes.UNKNOWN_LEADER_EPOCH, -1L, emptyList()) }
+        eventually(5.seconds) { assertEquals(5L, backoffs.filter { it.first == FetcherBackoff.ERROR }.getOrNull(4)?.second) }
+    }
+
+    @Test
+    fun `a local epoch bump fences the append and stops the fetcher even if the leader accepts the old epoch`() {
+        roles()
+        leader.produce("m0")
+        // Before the first FETCH is answered, this replica applies epoch 1; the leader is still at epoch 0.
+        fetchFaults += { follower.leaderAndIsr(1, 1, listOf(1, 2), listOf(1, 2)); null }
+        val fetcher = startFetcher(epoch = 0)
+        assertTrue(fetcher.awaitShutdown(5_000), "fetcher stops on the local fence")
+        assertEquals(1, fetchRequests.size)
+        assertEquals(0L, follower.state().logEndOffset, "nothing appended")
+        assertEquals(1, follower.state().leaderEpoch)
+    }
+
+    @Test
     fun `a batch that does not start at the log end offset redoes the handshake`() {
         roles()
         repeat(2) { leader.produce("m$it") }
@@ -234,7 +262,17 @@ class ReplicaFetcherTest {
                 override fun offsetsForLeaderEpoch(request: OffsetsForLeaderEpochRequest) = throw IOException("unused")
                 override fun fetch(request: FetchRequest): FetchResponse {
                     blocked.countDown()
-                    released.await() // like a socket read: unblocked only by close()
+                    // Like a blocking socket read: only close() releases it; an interrupt alone does not.
+                    var interrupted = false
+                    while (true) {
+                        try {
+                            released.await()
+                            break
+                        } catch (_: InterruptedException) {
+                            interrupted = true
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt()
                     throw IOException("socket closed")
                 }
                 override fun close() = released.countDown()

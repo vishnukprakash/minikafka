@@ -132,11 +132,12 @@ class ReplicationClusterTest {
     @Test
     fun `idle followers back off between empty fetches instead of busy-spinning`() {
         val leader = cluster.replicatedTopic("idle")
-        val startCount = cluster.broker(leader).snapshot().followerFetchRequests
+        // Counting window (between the snapshots) ⊆ measured window [start, end].
         val start = System.nanoTime()
+        val startCount = cluster.broker(leader).snapshot().followerFetchRequests
         alwaysFor(1.seconds) {} // an idle window
-        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
         val fetches = cluster.broker(leader).snapshot().followerFetchRequests - startCount
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
 
         // Each of the 2 followers sends at most one FETCH per 50ms backoff (+1 in flight at each edge).
         val upperBound = 2 * (elapsedMs / FETCH_BACKOFF_MS + 2)
