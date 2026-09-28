@@ -62,9 +62,10 @@ class Log(
      * otherwise [IllegalArgumentException] is thrown and nothing is written.
      *
      * CRC: a [Record] is an already-decoded value that does not carry its stored CRC, so there is
-     * nothing left to verify here. Integrity is checked where the bytes are decoded
-     * ([Record.readFrom] throws [CorruptRecordException]), and [Record.writeTo] computes a fresh
-     * CRC from the fields, so a corrupted record can never reach this method from the wire.
+     * nothing left to verify here; this method *relies on* integrity having been checked where the
+     * bytes were decoded — on disk by [Record.readFrom], on the wire by `proto.FetchedRecord.decode`
+     * (ruling R4), both of which throw [CorruptRecordException]. [Record.writeTo] then computes a
+     * fresh CRC from the fields.
      */
     @Synchronized
     fun appendAsFollower(records: List<Record>) {

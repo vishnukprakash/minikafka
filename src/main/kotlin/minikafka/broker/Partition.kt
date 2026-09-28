@@ -396,6 +396,18 @@ class Partition internal constructor(
 
     private fun epochError(code: Short) = OffsetsForLeaderEpochResponse(code, -1, -1L)
 
+    internal fun readLocal(from: Long, untilExclusive: Long): List<Record> = lock.withLock {
+        val out = mutableListOf<Record>()
+        var next = from
+        while (next < minOf(untilExclusive, log.logEndOffset())) {
+            val batch = log.read(next, 1024 * 1024, untilExclusive)
+            if (batch.isEmpty()) break
+            out += batch
+            next = batch.last().offset + 1
+        }
+        out
+    }
+
     internal fun snapshot(): PartitionSnapshot = lock.withLock {
         PartitionSnapshot(
             tp, role, leader, leaderEpoch, replicas, committedIsr.sorted(), maximalIsr.sorted(), zkVersion,

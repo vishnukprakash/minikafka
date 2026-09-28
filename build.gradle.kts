@@ -22,6 +22,10 @@ dependencies {
     implementation("org.apache.curator:curator-framework:5.9.0")
     implementation("org.slf4j:slf4j-api:2.0.16")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
+    // `minikafka zk` runs ZooKeeperServerMain, whose server side needs these at runtime
+    // (same versions curator-test brings for TestingServer).
+    runtimeOnly("io.dropwizard.metrics:metrics-core:3.2.5")
+    runtimeOnly("org.xerial.snappy:snappy-java:1.1.10.4")
 
     testImplementation("org.apache.curator:curator-test:5.9.0")
 }

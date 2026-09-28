@@ -155,6 +155,10 @@ class ReplicaManager(
 
     internal fun fetchersPaused(): Boolean = fetchersPaused
 
+    /** Test/diagnostics hook: this replica's own records in `[from, untilExclusive)`, regardless of role or HW. */
+    internal fun readLocal(tp: TopicPartition, from: Long, untilExclusive: Long): List<Record> =
+        partitions[tp]?.readLocal(from, untilExclusive) ?: emptyList()
+
     fun snapshot(): BrokerSnapshot = BrokerSnapshot(
         brokerId, seenControllerEpoch, fetchersPaused,
         partitions.values.map { it.snapshot() }.sortedWith(compareBy({ it.tp.topic }, { it.tp.partition }))
