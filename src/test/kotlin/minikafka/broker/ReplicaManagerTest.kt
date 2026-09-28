@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
+import kotlin.time.Duration.Companion.milliseconds
 
 /** LeaderAndIsr fencing, the isr-updater CAS protocol, OffsetsForLeaderEpoch, follower path, stress. */
 class ReplicaManagerTest {
@@ -432,6 +433,32 @@ class ReplicaManagerTest {
         rm.close()
         assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2), "close waits for the 300 s interval")
         assertTrue(updater().isEmpty())
+    }
+
+    /** stopReplication runs before the ZooKeeper client closes: it must not return while an ISR write is in flight. */
+    @Test
+    fun `close waits for an in-flight ISR write to finish`() {
+        val store = FakeIsrStore()
+        val clock = minikafka.testing.MutableClock()
+        val tp = TopicPartition("t", 0)
+        val writing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        store.onWrite = { _, _, _ -> writing.countDown(); release.await(); null }
+        val rm = ReplicaManager(BrokerConfig(9, "localhost", 0, dir, 1, replicaLagTimeMaxMs = 100), store, clock)
+        try {
+            val v = store.controllerSet(tp, PartitionState(9, 0, listOf(9, 2), 1))
+            rm.applyLeaderAndIsr(LeaderAndIsrRequest(0, 1, 5L, listOf(LeaderAndIsrPartition("t", 0, 9, 0, listOf(9, 2), listOf(9, 2), v))), 5L)
+            clock.advance(101)
+            assertTrue(writing.await(10, TimeUnit.SECONDS), "the updater thread starts the shrink CAS")
+            val closed = async { rm.close() }
+            minikafka.testing.alwaysFor(200.milliseconds) { assertFalse(closed.isDone, "close returned with the write in flight") }
+            release.countDown()
+            closed.get(5, TimeUnit.SECONDS)
+            assertTrue(Thread.getAllStackTraces().keys.none { it.name == "b9-isr-updater" && it.isAlive })
+        } finally {
+            release.countDown()
+            rm.close()
+        }
     }
 
     @Test
