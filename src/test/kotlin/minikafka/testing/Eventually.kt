@@ -26,3 +26,21 @@ fun <T> eventually(
         LockSupport.parkNanos(pollInterval.inWholeNanoseconds)
     }
 }
+
+/**
+ * Asserts that [block] keeps succeeding (does not throw) for the whole of [duration], polling every
+ * [pollInterval]; rethrows the first failure. For "this must never happen" properties (e.g. no
+ * unclean leader is ever elected while the ISR is down).
+ */
+fun alwaysFor(
+    duration: Duration,
+    pollInterval: Duration = 25.milliseconds,
+    block: () -> Unit
+) {
+    val deadline = System.nanoTime() + duration.inWholeNanoseconds
+    while (true) {
+        block()
+        if (System.nanoTime() >= deadline) return
+        LockSupport.parkNanos(pollInterval.inWholeNanoseconds)
+    }
+}
