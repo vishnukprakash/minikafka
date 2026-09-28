@@ -82,6 +82,9 @@ class CliClusterE2eTest {
             val created = cli("topics", "create", "--topic", "demo", "--partitions", "1", "--replication-factor", "3", "--bootstrap", all)
             assertEquals(0, created.exit, created.err)
             assertTrue("created topic demo" in created.out, created.out)
+            val duplicate = cli("topics", "create", "--topic", "demo", "--partitions", "1", "--replication-factor", "3", "--bootstrap", all)
+            assertEquals(1, duplicate.exit, "a failed topics create must exit non-zero: ${duplicate.out} ${duplicate.err}")
+            assertTrue("error creating topic" in duplicate.err, duplicate.err)
             val tp = TopicPartition("demo", 0)
             eventually(30.seconds) {
                 val s = checkNotNull(store.readPartitionState(tp)) { "no state yet" }.value

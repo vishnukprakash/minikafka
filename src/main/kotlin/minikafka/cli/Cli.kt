@@ -114,7 +114,10 @@ private fun runTopics(args: List<String>) {
                 val replicationFactor = intFlag(args, "--replication-factor", 1)
                 val errorCode = client.createTopic(topic, partitions, replicationFactor)
                 if (errorCode == ErrorCodes.NONE) println("created topic $topic with $partitions partitions")
-                else println("error creating topic: code $errorCode")
+                else {
+                    System.err.println("error creating topic: code $errorCode")
+                    kotlin.system.exitProcess(1)
+                }
             }
             "list" -> client.metadata().topics.forEach { println("${it.name}\t${it.numPartitions} partitions") }
             "describe" -> describe(client, flag(args, "--topic"))
