@@ -119,7 +119,7 @@ class TestCluster(
 
     fun healZk(id: Int) = proxy(id).heal()
 
-    /** Pauses/resumes the broker's replica fetchers (ruling R2 hook; a no-op until Task 10). */
+    /** Pauses/resumes the broker's replica fetchers (ruling R2 hook): while paused they send no requests; roles are untouched. */
     fun pauseFetchers(id: Int, paused: Boolean = true) = broker(id).replicaManager.pauseFetchers(paused)
 
     // ------------------------------------------------------------------ clients & ZooKeeper views

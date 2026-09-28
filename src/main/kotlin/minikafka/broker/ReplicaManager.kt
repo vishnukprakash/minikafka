@@ -9,6 +9,7 @@ import minikafka.proto.OffsetsForLeaderEpochResponse
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Told about role transitions applied by LeaderAndIsr, after the partition lock is released
@@ -66,6 +67,11 @@ class ReplicaManager(
     @Volatile
     private var closed = false
 
+    private val followerFetchRequests = AtomicLong()
+
+    @Volatile
+    private var fetcherManager: ReplicaFetcherManager? = null
+
     internal val isrUpdater = IsrUpdater(brokerId, config.replicaLagTimeMaxMs, isrStore) { partitions.values.toList() }
 
     init {
@@ -117,8 +123,10 @@ class ReplicaManager(
     fun fetchAsConsumer(tp: TopicPartition, offset: Long, maxBytes: Int): FetchResult =
         partitions[tp]?.fetchAsConsumer(offset, maxBytes) ?: notLeaderFetch
 
-    fun fetchAsFollower(tp: TopicPartition, replicaId: Int, offset: Long, currentLeaderEpoch: Int, maxBytes: Int): FetchResult =
-        partitions[tp]?.fetchAsFollower(replicaId, offset, currentLeaderEpoch, maxBytes) ?: notLeaderFetch
+    fun fetchAsFollower(tp: TopicPartition, replicaId: Int, offset: Long, currentLeaderEpoch: Int, maxBytes: Int): FetchResult {
+        followerFetchRequests.incrementAndGet()
+        return partitions[tp]?.fetchAsFollower(replicaId, offset, currentLeaderEpoch, maxBytes) ?: notLeaderFetch
+    }
 
     fun offsetsForLeaderEpoch(tp: TopicPartition, replicaId: Int, currentLeaderEpoch: Int, requestedEpoch: Int): OffsetsForLeaderEpochResponse =
         partitions[tp]?.offsetsForLeaderEpoch(replicaId, currentLeaderEpoch, requestedEpoch)
@@ -147,7 +155,29 @@ class ReplicaManager(
         partitions[tp]?.truncateAsFollower(expectedLeaderEpoch, queryLeader)
             ?: FollowerTruncationOutcome(ErrorCodes.NOT_LEADER_FOR_PARTITION, null)
 
-    /** Test hook (ruling R2): Task 10's fetchers consult it; no-op until fetchers exist. */
+    /** This replica's log end offset, or null if the partition is not open here. */
+    fun logEndOffset(tp: TopicPartition): Long? = partitions[tp]?.logEndOffset()
+
+    /**
+     * Turns on replication (Task 10): installs a [ReplicaFetcherManager] as the [roleListener], so
+     * every follower transition applied from now on starts a [ReplicaFetcher]. Call once, before
+     * the broker accepts LeaderAndIsr. [resolver] maps the leader's broker id to its endpoint.
+     */
+    fun startReplication(
+        resolver: BrokerResolver,
+        clientFactory: LeaderClientFactory = LeaderClientFactory.tcp(config.replicaSocketTimeoutMs),
+        settings: FetcherSettings = FetcherSettings.from(config)
+    ): Unit = synchronized(leaderAndIsrLock) {
+        check(fetcherManager == null) { "replication already started" }
+        if (closed) return
+        val manager = ReplicaFetcherManager(this, resolver, clientFactory, settings)
+        fetcherManager = manager
+        roleListener = manager
+    }
+
+    internal fun fetcherFor(tp: TopicPartition): ReplicaFetcher? = fetcherManager?.fetcherFor(tp)
+
+    /** Test hook (ruling R2): while paused, fetchers send no requests (roles are untouched); resume continues. */
     internal fun pauseFetchers(paused: Boolean) {
         fetchersPaused = paused
         logger.info("b{}: fetchers {}", brokerId, if (paused) "paused" else "resumed")
@@ -161,21 +191,23 @@ class ReplicaManager(
 
     fun snapshot(): BrokerSnapshot = BrokerSnapshot(
         brokerId, seenControllerEpoch, fetchersPaused,
-        partitions.values.map { it.snapshot() }.sortedWith(compareBy({ it.tp.topic }, { it.tp.partition }))
+        partitions.values.map { it.snapshot() }.sortedWith(compareBy({ it.tp.topic }, { it.tp.partition })),
+        followerFetchRequests.get()
     )
 
     /**
      * Step 1 of the graceful stop (algorithm 2): stops the threads that write to ZooKeeper or
-     * replicate (the isr-updater; Task 10 adds the fetchers) *before* the ZooKeeper client closes.
-     * Idempotent; [close] calls it too.
+     * replicate (the fetchers, then the isr-updater) *before* the ZooKeeper client closes.
+     * Idempotent; [close] calls it too. No fetcher starts afterwards.
      */
     fun stopReplication() {
+        fetcherManager?.close()
         isrUpdater.close()
     }
 
     override fun close() {
         synchronized(leaderAndIsrLock) { closed = true }
-        isrUpdater.close()
+        stopReplication()
         partitions.values.forEach { it.close() }
     }
 

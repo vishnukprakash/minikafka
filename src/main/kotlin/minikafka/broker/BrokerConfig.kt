@@ -13,6 +13,11 @@ data class BrokerConfig(
     val dataDir: File,
     val minInsyncReplicas: Int = 1,
     val replicaLagTimeMaxMs: Long = 10_000,
+    /** Fetcher backoff after an empty response; errors back off exponentially from it up to [replicaFetchMaxBackoffMs]. */
     val replicaFetchBackoffMs: Long = 50,
+    val replicaFetchMaxBackoffMs: Long = 1_000,
+    val replicaFetchMaxBytes: Int = 1 shl 20,
+    /** Read/connect timeout of a follower's connection to its leader (FETCH answers at once: no long-poll). */
+    val replicaSocketTimeoutMs: Int = 10_000,
     val requestTimeoutMs: Int = 30_000
 )

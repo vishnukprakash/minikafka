@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * TCP server together. Startup follows algorithm 1 and [stop] algorithm 2.
  *
  * Threads (all daemons): `b<id>-acceptor`, `b<id>-handler-<n>` (one per connection),
- * `b<id>-controller`, `b<id>-controller-send-<target>`, `b<id>-isr-updater`.
+ * `b<id>-controller`, `b<id>-controller-send-<target>`, `b<id>-isr-updater`,
+ * `b<id>-fetcher-<topic>-<p>` (one per followed partition).
  */
 class Server(val config: ServerConfig) {
     private val log = LoggerFactory.getLogger(Server::class.java)
@@ -61,6 +62,7 @@ class Server(val config: ServerConfig) {
             val seenControllerEpoch = store.controllerEpoch().value
             val rm = ReplicaManager(config.brokerConfig(), ZkIsrStore(store)).also { replicas = it }
             rm.seenControllerEpoch = seenControllerEpoch
+            rm.startReplication(ZkBrokerResolver(store)) // fetchers start on LeaderAndIsr
             val apis = BrokerApis(brokerId, store, rm) { brokerEpoch }
 
             val socket = ServerSocket().also { serverSocket = it }
@@ -101,7 +103,7 @@ class Server(val config: ServerConfig) {
         if (stopped) return
         stopped = true
         running = false
-        replicas?.let { runCatching { it.stopReplication() } } // 1. isr-updater (+ fetchers, Task 10)
+        replicas?.let { runCatching { it.stopReplication() } } // 1. fetchers, then the isr-updater
         controllerOrNull?.let { runCatching { it.close() } }
         zk?.let { runCatching { it.close() } }
         serverSocket?.let { runCatching { it.close() } }

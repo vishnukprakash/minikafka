@@ -25,5 +25,7 @@ data class BrokerSnapshot(
     val brokerId: Int,
     val seenControllerEpoch: Int,
     val fetchersPaused: Boolean,
-    val partitions: List<PartitionSnapshot>
+    val partitions: List<PartitionSnapshot>,
+    /** Leader side: follower FETCH requests handled since startup (any outcome) — shows fetcher backoff. */
+    val followerFetchRequests: Long = 0
 )

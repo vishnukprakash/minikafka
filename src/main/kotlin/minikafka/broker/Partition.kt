@@ -396,6 +396,8 @@ class Partition internal constructor(
 
     private fun epochError(code: Short) = OffsetsForLeaderEpochResponse(code, -1, -1L)
 
+    internal fun logEndOffset(): Long = lock.withLock { log.logEndOffset() }
+
     internal fun readLocal(from: Long, untilExclusive: Long): List<Record> = lock.withLock {
         val out = mutableListOf<Record>()
         var next = from
