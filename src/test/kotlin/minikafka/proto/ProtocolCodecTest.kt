@@ -188,4 +188,15 @@ class ProtocolCodecTest {
         )
         assertEquals(OffsetCommitResponse(ErrorCodes.NONE), decoded)
     }
+
+    @Test
+    fun `ProduceRequest keeps an empty key and an empty value distinct from a null key`() {
+        val decoded = roundTrip(
+            { ProduceRequest("t", 0, ByteArray(0), ByteArray(0), 1, 1000).encode(it) },
+            { ProduceRequest.decode(it) }
+        )
+        assertNotNull(decoded.key)
+        assertEquals(0, decoded.key!!.size)
+        assertEquals(0, decoded.value.size)
+    }
 }

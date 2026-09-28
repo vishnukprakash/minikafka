@@ -90,4 +90,10 @@ class ReplicaAssignerTest {
 
         assertEquals(fromSorted, fromUnsorted)
     }
+
+    @Test
+    fun `replication factor of 1 and equal to the broker count are both valid`() {
+        assertEquals(mapOf(0 to listOf(1)), ReplicaAssigner.assign(brokerIds = listOf(1, 2, 3), numPartitions = 1, replicationFactor = 1))
+        assertEquals(mapOf(0 to listOf(1, 2, 3)), ReplicaAssigner.assign(brokerIds = listOf(1, 2, 3), numPartitions = 1, replicationFactor = 3))
+    }
 }

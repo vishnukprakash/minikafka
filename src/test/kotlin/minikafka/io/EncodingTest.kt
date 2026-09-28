@@ -42,4 +42,16 @@ class EncodingTest {
         val input = DataInputStream(ByteArrayInputStream(buffer.toByteArray()))
         assertNull(input.readNullableBytesAsInt32())
     }
+
+    @Test
+    fun `an empty string and empty bytes round trip as empty, not null`() {
+        val buffer = ByteArrayOutputStream()
+        DataOutputStream(buffer).apply {
+            writeNullableString("")
+            writeNullableBytesAsInt32(ByteArray(0))
+        }
+        val input = DataInputStream(ByteArrayInputStream(buffer.toByteArray()))
+        assertEquals("", input.readNullableString())
+        assertArrayEquals(ByteArray(0), input.readNullableBytesAsInt32())
+    }
 }

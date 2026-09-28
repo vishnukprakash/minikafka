@@ -62,4 +62,14 @@ class KvCodecTest {
         assertEquals(assignment, KvCodec.decodeAssignment(bytes))
         assertArrayEquals(bytes, KvCodec.encodeAssignment(linkedMapOf(0 to listOf(1, 2, 3), 1 to listOf(2, 3, 1))))
     }
+
+    @Test
+    fun `rejects empty keys and znodes missing a required key`() {
+        assertThrows<IllegalArgumentException> { KvCodec.encode(mapOf("" to "x")) }
+        assertThrows<IllegalArgumentException> { KvCodec.decode("=x\n".toByteArray()) }
+        assertThrows<IllegalArgumentException> { KvCodec.decodeBrokerInfo(1, "port=9\n".toByteArray()) }
+        assertThrows<IllegalArgumentException> {
+            KvCodec.decodePartitionState("leader=1\nleader_epoch=0\ncontroller_epoch=1\n".toByteArray())
+        }
+    }
 }

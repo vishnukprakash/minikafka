@@ -3,6 +3,7 @@ package minikafka.client
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class PartitionerTest {
     @Test
@@ -37,5 +38,19 @@ class PartitionerTest {
         assertEquals(1, partitioner.partition("a", null, 3))
         assertEquals(0, partitioner.partition("b", null, 3))
         assertEquals(2, partitioner.partition("a", null, 3))
+    }
+
+    @Test
+    fun `zero partitions is rejected with IllegalArgumentException, keyed or not`() {
+        val partitioner = Partitioner()
+        assertThrows<IllegalArgumentException> { partitioner.partition("t", "k".toByteArray(), 0) }
+        assertThrows<IllegalArgumentException> { partitioner.partition("t", null, 0) }
+    }
+
+    @Test
+    fun `an empty key is a key, hashed like any other, not round-robined like null`() {
+        val partitioner = Partitioner()
+        val expected = Math.floorMod(ByteArray(0).contentHashCode(), 3)
+        repeat(3) { assertEquals(expected, partitioner.partition("t", ByteArray(0), 3)) }
     }
 }
