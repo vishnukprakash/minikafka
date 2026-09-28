@@ -65,7 +65,7 @@ proto, log → io          model → nothing   (proto and log never depend on ea
 (This exact edge list is re-derived from `grep -h '^import minikafka\.' src/main/kotlin/minikafka/<pkg>/*.kt`
 per package, and kept identical in `CLAUDE.md`.) `server`'s composition root wires `ReplicaManager`,
 `Controller`, and `ZkStore`/`ZkIsrStore` together; `cluster` is the controller (election,
-reconciliation); `broker` has no dependency on `zk` — it talks to ZK only through the `IsrWriter`/
+reconciliation); `broker` has no dependency on `zk` — it talks to ZK only through the `IsrStore` (in `IsrWriter.kt`)/
 `BrokerResolver` interfaces `server` implements over `ZkStore`. `proto` and `log` still never depend
 on each other — both depend only on `io` for shared nullable-string/bytes encoding primitives.
 
@@ -102,8 +102,8 @@ on each other — both depend only on `io` for shared nullable-string/bytes enco
   HW state machine, wraps a `Log`), `ReplicaManager` (registry of this broker's partitions, applies
   `LeaderAndIsr`, produce/fetch dispatch, acks=all waiting), `ReplicaFetcher` +
   `ReplicaFetcherManager` (follower replication: epoch handshake, truncation, fetch loop),
-  `IsrUpdater` (per-broker thread that proposes ISR shrink/expand CAS writes), `IsrWriter`
-  (interface `Partition`/`IsrUpdater` use to CAS the ISR znode — implemented over `ZkStore` in
+  `IsrUpdater` (per-broker thread that proposes ISR shrink/expand CAS writes), `IsrStore`
+  (interface, in `IsrWriter.kt`, `Partition`/`IsrUpdater` use to CAS the ISR znode — implemented over `ZkStore` in
   `server`, keeping `broker` free of a direct `zk` dependency), `FollowerTruncation` (pure,
   independently-testable truncation-target computation), `BrokerSnapshot`, `Clock` (injectable, for
   deterministic lag/backoff tests).
@@ -111,9 +111,10 @@ on each other — both depend only on `io` for shared nullable-string/bytes enco
   acquires the data-dir lock, connects to ZooKeeper, builds `ReplicaManager` + `Controller`,
   registers `/brokers/ids/<id>`, starts the controller event thread), `ConnectionHandler`
   (thread-per-connection request routing over all 8 API keys), `DataDirLock` (`FileChannel.tryLock`
-  on `<dataDir>/.lock` + a `<dataDir>/broker.id` mismatch check), `ZkBrokerResolver` (reads
-  `/brokers/*` for `METADATA` responses), `ZkIsrStore` (the `IsrWriter` implementation over
-  `ZkStore`).
+  on `<dataDir>/.lock` + a `<dataDir>/broker.id` mismatch check), `BrokerApis` (one handler per API key;
+  `METADATA` reads ZooKeeper directly, uncached), `ZkBrokerResolver` (the replica fetchers' cached
+  broker-id → endpoint resolver over `/brokers/ids`, re-read on a miss or after a failed
+  connection), `ZkIsrStore` (the `IsrStore` implementation over `ZkStore`).
 - **`minikafka.client`** — `MiniKafkaClient` (bootstrap list, metadata cache, one `Connection` per
   broker, retry-on-`NOT_LEADER`/`LEADER_NOT_AVAILABLE`/`FENCED_LEADER_EPOCH`/IO with metadata
   refresh), `Partitioner` (client-side hash-by-key/round-robin — the client must know the partition
@@ -162,7 +163,7 @@ returned **in-band**, never as connection-level failures.
 | 1 | CREATE_TOPIC | topic, numPartitions:int32, **replicationFactor:int32** | errorCode |
 | 2 | METADATA | *(empty)* | **controllerId:int32**, brokers[**id, host, port**], topics[name, partitions[**p, leader(-1 if none), leaderEpoch(-1 if none), replicas[], isr[]**]] |
 | 3 | PRODUCE | topic, **partition:int32**, key, value, **acks:int16 (1 or -1)**, **timeoutMs:int32** | errorCode, partition, offset |
-| 4 | FETCH | topic, partition, offset, maxBytes, **replicaId:int32 (-1 = consumer)**, **currentLeaderEpoch:int32 (-1 = no check)** | errorCode, **highWatermark:int64 (-1 on error)**, records[offset, **crc:int32**, **leaderEpoch:int32**, timestamp, key, value] |
+| 4 | FETCH | topic, partition, offset, maxBytes, **replicaId:int32 (-1 = consumer)**, **currentLeaderEpoch:int32 (-1 = no check; consumers only)** | errorCode, **highWatermark:int64 (-1 on error)**, records[offset, **crc:int32**, **leaderEpoch:int32**, timestamp, key, value] |
 | 5 | OFFSET_COMMIT | group, topic, partition, offset | errorCode (now ZK-backed, wire-unchanged) |
 | 6 | OFFSET_FETCH | group, topic, partition | errorCode, offset (now ZK-backed, wire-unchanged) |
 | 7 | LEADER_AND_ISR *(new)* | controllerId, controllerEpoch, brokerEpoch:int64, partitions[topic, p, leader, leaderEpoch, isr[], replicas[], zkVersion] | errorCode |
@@ -181,7 +182,7 @@ Error codes (`minikafka.proto.ErrorCodes`), all distinct (enforced by a test):
 | 6 | LEADER_NOT_AVAILABLE | partition has no leader yet (new topic, or all-ISR-dead) |
 | 7 | NOT_ENOUGH_REPLICAS | acks=all produce rejected up front: `|committedIsr| < minISR` |
 | 8 | NOT_ENOUGH_REPLICAS_AFTER_APPEND | append succeeded but ISR shrank below minISR before ack |
-| 9 | REQUEST_TIMED_OUT | acks=all wait exceeded `timeoutMs` |
+| 9 | REQUEST_TIMED_OUT | acks=all wait exceeded `timeoutMs` (clamped by the broker to `[0, requestTimeoutMs]`) |
 | 10 | STALE_CONTROLLER_EPOCH | LeaderAndIsr's `controllerEpoch` is behind what this broker has seen |
 | 11 | STALE_BROKER_EPOCH | LeaderAndIsr's `brokerEpoch` doesn't match this broker's current ZK registration |
 | 12 | FENCED_LEADER_EPOCH | request's `currentLeaderEpoch` is behind the partition's actual epoch |
@@ -304,7 +305,9 @@ the bytes ever reach the wire encoder).
 per-partition `Condition`, woken on every HW advance, until either the HW passes the produced
 offset (respond `NONE` if `|committedIsr| ≥ minISR`, else `NOT_ENOUGH_REPLICAS_AFTER_APPEND`), the
 partition stops being led by this broker or the epoch changes (`NOT_LEADER_FOR_PARTITION`), or
-`timeoutMs` elapses (`REQUEST_TIMED_OUT`). **Ruling R7:** the deadline is measured against real
+`timeoutMs` elapses (`REQUEST_TIMED_OUT`). The broker clamps the client's `timeoutMs` to
+`[0, requestTimeoutMs]` (default 30s), so a huge value cannot park a handler thread and a negative
+one behaves as 0 (appended; `NONE` if already committed, else `REQUEST_TIMED_OUT` at once). **Ruling R7:** the deadline is measured against real
 wall-clock time (`System.nanoTime` via `Condition.awaitNanos`), not the injectable `Clock` used
 elsewhere for deterministic lag tests — this guarantees a waiter always terminates even if a test's
 `MutableClock` is never advanced; the cost is that acks=all timeout tests use a short *real* timeout
@@ -314,11 +317,15 @@ elsewhere for deterministic lag tests — this guarantees a waiter always termin
 `[0, LEO]` is `OFFSET_OUT_OF_RANGE`; a request inside `[HW, LEO]` returns an empty batch (data exists
 but isn't yet acknowledged-safe to hand a consumer); otherwise records strictly below HW are
 returned. **This is why `minikafka consume` always stops at the high watermark** rather than the
-log's true end — it's consuming exactly what's safe to consider committed, the same distinction a
-real Kafka consumer's `read_committed`/default isolation makes relative to `LEO`.
+log's true end — it's consuming exactly what's safe to consider committed. This matches real Kafka's
+*default* consumer visibility, which is also bounded by the high watermark (under any isolation
+level). Kafka's `read_committed` isolation is a different, transactional bound — the last stable
+offset (LSO), below any open transaction — which minikafka has no equivalent of (no transactions).
 
 **Follower fetch / fencing (`UNKNOWN_LEADER_EPOCH`).** Every `FETCH` from a replica or a consumer
-carries `currentLeaderEpoch` (`-1` = no check, used by consumers); the leader replies
+carries `currentLeaderEpoch` (`-1` = no check, allowed for consumers only — a replica fetch with
+`-1` is rejected `FENCED_LEADER_EPOCH`, since it would otherwise move follower LEO/HW unfenced);
+the leader replies
 `FENCED_LEADER_EPOCH` if the caller's epoch is behind the partition's actual epoch, or
 `UNKNOWN_LEADER_EPOCH` if it's *ahead* (the leader hasn't caught up to a controller update the
 caller already knows about). **Ruling R9:** on `UNKNOWN_LEADER_EPOCH` the fetcher keeps its

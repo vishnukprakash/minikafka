@@ -86,14 +86,16 @@ proto, log → io          model → nothing   (proto and log never depend on ea
 - **`minikafka.broker`** — `Partition` (per-partition leader/ISR/HW state, wraps a `Log`),
   `ReplicaManager` (this broker's partition registry, applies `LeaderAndIsr`, produce/fetch
   dispatch, acks=all waiting), `ReplicaFetcher`/`ReplicaFetcherManager` (follower replication:
-  epoch handshake + fetch loop), `IsrUpdater` (per-broker ISR CAS proposer thread), `IsrWriter`
-  (interface implemented over `ZkStore` in `server`, so `broker` itself has no `zk` dependency),
+  epoch handshake + fetch loop), `IsrUpdater` (per-broker ISR CAS proposer thread), `IsrStore`
+  (interface, in `IsrWriter.kt`, implemented over `ZkStore` in `server`, so `broker` itself has no
+  `zk` dependency),
   `FollowerTruncation`, `BrokerSnapshot`, `Clock` (injectable). (The old single-broker `Broker` and
   `OffsetStore` classes are gone.)
 - **`minikafka.server`** — composition root: `Server`/`ServerConfig` (bind, ZK connect, register
   `/brokers/ids/<id>`, wire `ReplicaManager` + `Controller`), `ConnectionHandler`
   (thread-per-connection, routes all 8 API keys), `DataDirLock` (`.lock` + `broker.id` mismatch
-  check), `ZkBrokerResolver` (METADATA reads ZK directly, no cache), `ZkIsrStore`.
+  check), `BrokerApis` (per-API handlers; METADATA reads ZK directly, no cache), `ZkBrokerResolver` (the
+  replica fetchers' cached broker-id → endpoint resolver over `/brokers/ids`), `ZkIsrStore`.
 - **`minikafka.client`** — `MiniKafkaClient` (bootstrap list, metadata cache, one `Connection` per
   broker, retry-with-metadata-refresh on NOT_LEADER/LEADER_NOT_AVAILABLE/FENCED/IO),
   `Partitioner` (client-side hash-by-key/round-robin — the client must know the partition before it
