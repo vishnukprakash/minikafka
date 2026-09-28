@@ -2,8 +2,13 @@ package minikafka.log
 
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 
 class LogSegmentTest {
@@ -72,5 +77,26 @@ class LogSegmentTest {
         assertEquals(listOf(0 to 0L, 2 to 2L), reopened.epochStarts())
         assertEquals(3L, reopened.nextOffset)
         reopened.close()
+    }
+
+    @Test
+    fun `delete removes both files and fails loudly when a file survives`(@TempDir tempDir: File) {
+        val ok = LogSegment(tempDir, baseOffset = 0L)
+        ok.append(Record(0L, 0, 1000L, null, "a".toByteArray()))
+        ok.delete()
+        assertFalse(File(tempDir, "%020d.log".format(0L)).exists())
+
+        val dir = File(tempDir, "ro").apply { mkdirs() }
+        val segment = LogSegment(dir, baseOffset = 5L)
+        segment.append(Record(5L, 0, 1000L, null, "a".toByteArray()))
+        assumeTrue(dir.setWritable(false), "cannot make the directory read-only here")
+        try {
+            // Running as root would let the delete succeed anyway.
+            assumeTrue(!File(dir, "probe").let { runCatching { it.createNewFile() }.getOrDefault(false) })
+            val e = assertThrows(IOException::class.java) { segment.delete() }
+            assertTrue(File(dir, "%020d.log".format(5L)).path in (e.message ?: ""), e.message)
+        } finally {
+            dir.setWritable(true)
+        }
     }
 }

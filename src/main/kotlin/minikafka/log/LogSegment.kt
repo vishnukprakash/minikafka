@@ -175,12 +175,18 @@ class LogSegment(
         raf.close()
     }
 
-    /** Closes the segment and deletes its log and index files. */
+    /**
+     * Closes the segment and deletes its log and index files. Throws [IOException] (naming the
+     * file) if either still exists afterwards, so a truncated-away segment can never silently
+     * survive and be re-adopted by the next [Log] open. The log file goes first: once it is gone the
+     * segment is unreachable even if the index delete then fails.
+     */
     @Synchronized
     fun delete() {
         raf.close()
-        logFile.delete()
-        indexFile.delete()
+        for (file in listOf(logFile, indexFile)) {
+            if (!file.delete() && file.exists()) throw IOException("could not delete segment file ${file.path}")
+        }
     }
 
     companion object {
