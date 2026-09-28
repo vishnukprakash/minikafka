@@ -132,9 +132,15 @@ class ReplicaManager(
     /**
      * Algorithm 11. acks=all blocks the calling (connection-handler) thread until committed, fenced,
      * or [timeoutMs] of real time (System.nanoTime, not the injected [Clock]) elapses (R7).
+     *
+     * The client's [timeoutMs] is clamped to `[0, BrokerConfig.requestTimeoutMs]`: a huge value
+     * cannot park a handler thread indefinitely, and a negative one is treated as 0 (the record is
+     * appended and answers NONE if already committed, else REQUEST_TIMED_OUT at once — like any
+     * timeout, outcome unknown, safe to retry).
      */
     fun produce(tp: TopicPartition, key: ByteArray?, value: ByteArray, acks: Short, timeoutMs: Int): ProduceResult =
-        partitions[tp]?.produce(key, value, acks, timeoutMs) ?: ProduceResult(ErrorCodes.NOT_LEADER_FOR_PARTITION, -1L)
+        partitions[tp]?.produce(key, value, acks, timeoutMs.coerceIn(0, maxOf(0, config.requestTimeoutMs)))
+            ?: ProduceResult(ErrorCodes.NOT_LEADER_FOR_PARTITION, -1L)
 
     fun fetchAsConsumer(tp: TopicPartition, offset: Long, maxBytes: Int): FetchResult =
         partitions[tp]?.fetchAsConsumer(offset, maxBytes) ?: notLeaderFetch

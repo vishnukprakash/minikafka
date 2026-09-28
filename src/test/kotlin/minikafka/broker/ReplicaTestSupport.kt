@@ -54,14 +54,15 @@ class ReplicaHarness(
     val brokerId: Int = 1,
     minInsyncReplicas: Int = 1,
     val lagMs: Long = 1_000,
-    val tp: TopicPartition = TopicPartition("t", 0)
+    val tp: TopicPartition = TopicPartition("t", 0),
+    requestTimeoutMs: Int = 30_000
 ) : AutoCloseable {
     val clock = MutableClock()
     val store = FakeIsrStore()
     val brokerEpoch = 100L
     var controllerEpoch = 1
     val rm = ReplicaManager(
-        BrokerConfig(brokerId, "localhost", 0, dataDir, minInsyncReplicas, replicaLagTimeMaxMs = lagMs),
+        BrokerConfig(brokerId, "localhost", 0, dataDir, minInsyncReplicas, replicaLagTimeMaxMs = lagMs, requestTimeoutMs = requestTimeoutMs),
         store, clock, startIsrUpdater = false
     )
 

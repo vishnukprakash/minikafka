@@ -161,6 +161,30 @@ class ReplicaManagerTest {
     }
 
     @Test
+    fun `acks=all produce timeout is clamped to requestTimeoutMs`() {
+        ReplicaHarness(dir, requestTimeoutMs = 200).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2)) // follower 2 never fetches => never committed
+            val started = System.nanoTime()
+            val r = h.produceAsync("a", timeoutMs = Int.MAX_VALUE).get(10, TimeUnit.SECONDS)
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertEquals(ErrorCodes.REQUEST_TIMED_OUT, r.errorCode)
+            assertTrue(elapsedMs < 5_000, "waited ${elapsedMs}ms, expected about requestTimeoutMs")
+        }
+    }
+
+    @Test
+    fun `a negative produce timeout is treated as zero`() {
+        ReplicaHarness(dir, requestTimeoutMs = 10_000).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1), listOf(1, 2)) // sole ISR member => committed on append
+            assertEquals(ErrorCodes.NONE, h.produce("a", ACKS_ALL, timeoutMs = -1).errorCode)
+            h.leaderAndIsr(1, 1, listOf(1, 2), listOf(1, 2))
+            val started = System.nanoTime()
+            assertEquals(ErrorCodes.REQUEST_TIMED_OUT, h.produce("b", ACKS_ALL, timeoutMs = -5).errorCode)
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 2_000)
+        }
+    }
+
+    @Test
     fun `becoming leader resets follower LEOs to unknown`() {
         ReplicaHarness(dir).use { h ->
             h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))

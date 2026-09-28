@@ -19,5 +19,6 @@ data class BrokerConfig(
     val replicaFetchMaxBytes: Int = 1 shl 20,
     /** Read/connect timeout of a follower's connection to its leader (FETCH answers at once: no long-poll). */
     val replicaSocketTimeoutMs: Int = 10_000,
+    /** Upper bound on a produce request's acks=all wait; the client's timeoutMs is clamped to `[0, this]`. */
     val requestTimeoutMs: Int = 30_000
 )
