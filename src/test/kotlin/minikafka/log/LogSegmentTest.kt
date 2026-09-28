@@ -10,9 +10,9 @@ class LogSegmentTest {
     @Test
     fun `appends and reads back records in order`(@TempDir tempDir: File) {
         val segment = LogSegment(tempDir, baseOffset = 0L)
-        segment.append(Record(0L, 1000L, null, "a".toByteArray()))
-        segment.append(Record(1L, 1001L, null, "b".toByteArray()))
-        segment.append(Record(2L, 1002L, null, "c".toByteArray()))
+        segment.append(Record(0L, 0, 1000L, null, "a".toByteArray()))
+        segment.append(Record(1L, 0, 1001L, null, "b".toByteArray()))
+        segment.append(Record(2L, 0, 1002L, null, "c".toByteArray()))
 
         val records = segment.read(0L, maxBytes = 1024)
         assertEquals(3, records.size)
@@ -26,7 +26,7 @@ class LogSegmentTest {
     fun `reads starting from a middle offset`(@TempDir tempDir: File) {
         val segment = LogSegment(tempDir, baseOffset = 0L)
         for (i in 0 until 5) {
-            segment.append(Record(i.toLong(), 1000L + i, null, "v$i".toByteArray()))
+            segment.append(Record(i.toLong(), 0, 1000L + i, null, "v$i".toByteArray()))
         }
         val records = segment.read(3L, maxBytes = 1024)
         assertEquals(2, records.size)
@@ -38,8 +38,8 @@ class LogSegmentTest {
     @Test
     fun `recovers by truncating a partial trailing write after an unclean shutdown`(@TempDir tempDir: File) {
         val segment = LogSegment(tempDir, baseOffset = 0L)
-        segment.append(Record(0L, 1000L, null, "a".toByteArray()))
-        segment.append(Record(1L, 1001L, null, "b".toByteArray()))
+        segment.append(Record(0L, 0, 1000L, null, "a".toByteArray()))
+        segment.append(Record(1L, 0, 1001L, null, "b".toByteArray()))
         segment.close()
 
         // Simulate a crash mid-write: a complete offset field followed by an

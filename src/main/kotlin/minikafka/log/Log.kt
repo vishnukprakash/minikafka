@@ -25,14 +25,18 @@ class Log(
     private fun activeSegment(): LogSegment = segments.last()
 
     @Synchronized
-    fun append(timestamp: Long, key: ByteArray?, value: ByteArray): Long {
+    fun append(timestamp: Long, key: ByteArray?, value: ByteArray): Long =
+        appendAsLeader(timestamp, key, value, leaderEpoch = 0)
+
+    @Synchronized
+    fun appendAsLeader(timestamp: Long, key: ByteArray?, value: ByteArray, leaderEpoch: Int): Long {
         var active = activeSegment()
         if (active.sizeInBytes >= segmentMaxBytes) {
             active = LogSegment(dir, active.nextOffset, indexIntervalBytes)
             segments.add(active)
         }
         val offset = active.nextOffset
-        active.append(Record(offset, timestamp, key, value))
+        active.append(Record(offset, leaderEpoch, timestamp, key, value))
         return offset
     }
 
