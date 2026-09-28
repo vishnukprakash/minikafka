@@ -70,6 +70,31 @@ class ZkStoreTest : ZkTestBase() {
     }
 
     @Test
+    fun `CAS BadVersion whose znode has the same ISR but a newer leader, epoch or controller epoch is not our write`() {
+        val zk = newStoreWithTopic()
+        val election = zk.electController(1)!!
+        val v0 = (zk.fencedCreatePartitionState(tp, state, election.epochZkVersion) as FencedWriteResult.Ok).zkVersion
+        // The old leader (1, epoch 0) wants to shrink to [1, 2]...
+        val ourShrink = state.copy(isr = listOf(1, 2))
+
+        // ...but a controller failover already elected 2 in epoch 1 with that same ISR.
+        val failover = PartitionState(leader = 2, leaderEpoch = 1, isr = listOf(1, 2), controllerEpoch = 1)
+        val v1 = (zk.fencedSetPartitionState(tp, failover, v0, election.epochZkVersion) as FencedWriteResult.Ok).zkVersion
+        assertNull(zk.casPartitionState(tp, ourShrink, v0), "same ISR, different leader and leader_epoch")
+        assertEquals(Versioned(failover, v1), zk.readPartitionState(tp))
+
+        // Same leader, newer leader_epoch (1 re-elected), same ISR.
+        val reelected = PartitionState(leader = 1, leaderEpoch = 2, isr = listOf(1, 2), controllerEpoch = 1)
+        val v2 = (zk.fencedSetPartitionState(tp, reelected, v1, election.epochZkVersion) as FencedWriteResult.Ok).zkVersion
+        assertNull(zk.casPartitionState(tp, reelected.copy(leaderEpoch = 1), v1), "same leader and ISR, newer leader_epoch")
+        assertEquals(Versioned(reelected, v2), zk.readPartitionState(tp))
+
+        // Differs only in controller_epoch.
+        assertNull(zk.casPartitionState(tp, reelected.copy(controllerEpoch = 7), v1), "differs only in controller_epoch")
+        assertEquals(Versioned(reelected, v2), zk.readPartitionState(tp))
+    }
+
+    @Test
     fun `fenced create refuses to invent a topic znode that has no assignment`() {
         val zk = newStore()
         val e = zk.electController(1)!!
