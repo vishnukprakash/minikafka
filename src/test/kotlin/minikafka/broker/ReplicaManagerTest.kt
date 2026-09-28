@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -212,6 +213,79 @@ class ReplicaManagerTest {
     }
 
     @Test
+    fun `an ISR write that committed but threw does not leave the partition stuck (R6)`() {
+        ReplicaHarness(dir).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1, 2, 3), listOf(1, 2, 3))
+            h.produce("a")
+            h.followerFetch(2, 1) // follower 2 keeps pace, follower 3 never fetches
+            h.store.onWrite = { tp, state, expected ->
+                h.store.onWrite = null
+                h.store.write(tp, state, expected) // P1 = [1, 2] commits in ZK ...
+                throw java.io.IOException("connection loss after commit") // ... but the outcome is unknown
+            }
+            h.clock.advance(h.lagMs + 1)
+            h.followerFetch(2, 1)
+            h.runIsrUpdater()
+            assertEquals(listOf(1, 2), h.store.states[h.tp]!!.value.isr)
+            assertEquals(listOf(1, 2, 3), h.state().committedIsr, "outcome unknown: no local change")
+
+            h.produce("b") // follower 2 now starts lagging too
+            h.clock.advance(h.lagMs + 1)
+            h.runIsrUpdater() // proposes [1] at the old version => BadVersion; znode [1, 2] is ours => adopt
+            var s = h.state()
+            assertFalse(s.isrStale)
+            assertEquals(listOf(1, 2), s.committedIsr)
+            assertEquals(h.store.states[h.tp]!!.zkVersion, s.zkVersion)
+            assertEquals(listOf(1, 2, 3), s.maximalIsr, "maximal ISR unchanged by the adoption")
+
+            h.runIsrUpdater() // re-proposes as normal
+            s = h.state()
+            assertEquals(listOf(1), s.committedIsr)
+            assertEquals(listOf(1), s.maximalIsr)
+            assertEquals(listOf(1), h.store.states[h.tp]!!.value.isr)
+            assertEquals(2L, s.highWatermark, "HW advances once the ISR converges")
+        }
+    }
+
+    @Test
+    fun `a pending member that lags before its expansion commits is removed only via a CAS`() {
+        ReplicaHarness(dir).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1), listOf(1, 2))
+            h.followerFetch(2, 0) // joins maximal ISR
+            h.store.onWrite = { _, _, _ -> throw java.io.IOException("connection loss") }
+            h.runIsrUpdater() // expansion outcome unknown
+            h.store.onWrite = null
+            h.store.writes.clear()
+            h.produce("a")
+            assertEquals(0L, h.state().highWatermark, "pending member counted in HW")
+            h.clock.advance(h.lagMs + 1)
+            h.runIsrUpdater()
+            assertEquals(listOf(1), h.store.writes.single().second.isr, "written even though committed ISR is unchanged")
+            assertEquals(listOf(1), h.state().maximalIsr)
+            assertEquals(1L, h.state().highWatermark)
+        }
+    }
+
+    @Test
+    fun `ISR writes preserve the znode's controller epoch`() {
+        ReplicaHarness(dir).use { h ->
+            // znode last written by controller epoch 3; LeaderAndIsr resent by a newer controller (5)
+            val v = h.store.controllerSet(h.tp, PartitionState(1, 0, listOf(1, 2), 3))
+            h.controllerEpoch = 5
+            val req = LeaderAndIsrRequest(0, 5, h.brokerEpoch, listOf(h.partitionRequest(1, 0, listOf(1, 2), listOf(1, 2), v)))
+            assertEquals(ErrorCodes.NONE, h.rm.applyLeaderAndIsr(req, h.brokerEpoch))
+            h.clock.advance(h.lagMs + 1)
+            h.runIsrUpdater()
+            assertEquals(PartitionState(1, 0, listOf(1), 3), h.store.states[h.tp]!!.value)
+            assertEquals(listOf(1), h.state().committedIsr)
+
+            h.followerFetch(2, 0)
+            h.runIsrUpdater() // second write reuses the known epoch without another read
+            assertEquals(PartitionState(1, 0, listOf(1, 2), 3), h.store.states[h.tp]!!.value)
+        }
+    }
+
+    @Test
     fun `a shrink is applied only after CAS success and HW uses the maximal ISR while in flight`() {
         ReplicaHarness(dir).use { h ->
             h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))
@@ -379,6 +453,10 @@ class ReplicaManagerTest {
             val produced = AtomicInteger()
             val ackedAll = ConcurrentLinkedQueue<Pair<Long, String>>()
             val threads = mutableListOf<Thread>()
+            // Deterministic ISR change: follower 3 does not fetch and no flips happen until the
+            // isr-updater (advancing the MutableClock past the lag) has committed its shrink.
+            val firstShrink = CountDownLatch(1)
+            val invariantChecks = AtomicInteger()
             fun spawn(name: String, body: () -> Unit) {
                 threads += Thread({
                     try {
@@ -417,6 +495,7 @@ class ReplicaManagerTest {
                 spawn("follower-$follower") {
                     var leo = 0L
                     var iteration = 0
+                    if (follower == 3) check(firstShrink.await(30, TimeUnit.SECONDS)) { "no initial shrink" }
                     while (running.get()) {
                         // follower 3 stalls periodically => lag shrink, then rejoin (expand)
                         if (follower == 3 && (iteration++ / 20) % 2 == 1) {
@@ -434,7 +513,8 @@ class ReplicaManagerTest {
                 }
             }
             spawn("flipper") {
-                var nextFlipAt = 100
+                check(firstShrink.await(30, TimeUnit.SECONDS)) { "no initial shrink" }
+                var nextFlipAt = produced.get() + 100
                 while (running.get()) {
                     if (produced.get() >= nextFlipAt) {
                         nextFlipAt += 100
@@ -454,6 +534,7 @@ class ReplicaManagerTest {
                 while (running.get()) {
                     h.clock.advance(300)
                     h.runIsrUpdater()
+                    if (firstShrink.count > 0 && 3 !in h.state().committedIsr) firstShrink.countDown()
                     LockSupport.parkNanos(500_000)
                 }
             }
@@ -463,6 +544,15 @@ class ReplicaManagerTest {
                 while (running.get()) {
                     val s = h.state()
                     check(s.highWatermark <= s.logEndOffset) { "HW ${s.highWatermark} > LEO ${s.logEndOffset}" }
+                    // D7: committed ISR ⊆ maximal ISR, and the ZK ISR at the version we hold ⊆ maximal ISR
+                    // (a given zkVersion's content never changes, so reading the store after is sound).
+                    check(s.maximalIsr.containsAll(s.committedIsr)) { "committed ${s.committedIsr} ⊄ maximal ${s.maximalIsr}" }
+                    val zk = h.store.states[h.tp]
+                    if (zk != null && zk.zkVersion == s.zkVersion && zk.value.leaderEpoch == s.leaderEpoch) {
+                        check(s.maximalIsr.containsAll(zk.value.isr)) { "ZK ISR ${zk.value.isr} ⊄ maximal ${s.maximalIsr}" }
+                        check(zk.value.isr == s.committedIsr) { "ZK ISR ${zk.value.isr} != committed ${s.committedIsr} at v${s.zkVersion}" }
+                        invariantChecks.incrementAndGet()
+                    }
                     if (s.leaderEpoch == lastEpoch && s.role == Partition.Role.LEADER) {
                         check(s.highWatermark >= lastHw) { "HW moved backward $lastHw -> ${s.highWatermark}" }
                     }
@@ -483,7 +573,9 @@ class ReplicaManagerTest {
             failures.firstOrNull()?.let { throw AssertionError("stress failure in a worker", it) }
 
             assertTrue(epoch.get() >= 5, "leadership flipped ${epoch.get()} times")
-            assertTrue(h.store.writes.isNotEmpty(), "the isr-updater made ISR changes during the run")
+            assertEquals(0L, firstShrink.count, "the isr-updater committed a shrink")
+            assertTrue(h.store.writes.isNotEmpty())
+            assertTrue(invariantChecks.get() > 0, "ZK-vs-local ISR invariant was exercised")
             val offsets = ackedAll.map { it.first }
             assertEquals(offsets.size, offsets.toSet().size, "acks=all offsets are unique")
             // Every acks=all-acknowledged record is still in the log at its offset.

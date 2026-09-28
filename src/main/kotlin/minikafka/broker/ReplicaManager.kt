@@ -92,7 +92,7 @@ class ReplicaManager(
                 continue
             }
             val partition = partitions.computeIfAbsent(tp, ::openPartition)
-            partition.applyLeaderAndIsr(p, req.controllerEpoch)?.let(transitions::add)
+            partition.applyLeaderAndIsr(p)?.let(transitions::add)
         }
         // Every partition lock is released here; now (re)wire fetchers.
         val listener = roleListener
@@ -107,6 +107,10 @@ class ReplicaManager(
         ErrorCodes.NONE
     }
 
+    /**
+     * Algorithm 11. acks=all blocks the calling (connection-handler) thread until committed, fenced,
+     * or [timeoutMs] of real time (System.nanoTime, not the injected [Clock]) elapses (R7).
+     */
     fun produce(tp: TopicPartition, key: ByteArray?, value: ByteArray, acks: Short, timeoutMs: Int): ProduceResult =
         partitions[tp]?.produce(key, value, acks, timeoutMs) ?: ProduceResult(ErrorCodes.NOT_LEADER_FOR_PARTITION, -1L)
 

@@ -13,7 +13,8 @@ import kotlin.concurrent.withLock
  *
  * [runOnce] is serialised (one ISR change in flight at a time per broker, so at most one per
  * partition). For each leader partition: prepare a proposal under the partition lock, release it,
- * CAS via [IsrStore.write] (and on conflict re-read via [IsrStore.read]) with no lock held, then
+ * CAS via [IsrStore.write] (preceded by a read when the znode's controller_epoch is not yet known,
+ * and on conflict followed by a re-read via [IsrStore.read]) with no lock held, then
  * complete under the lock.
  */
 class IsrUpdater internal constructor(
@@ -48,14 +49,26 @@ class IsrUpdater internal constructor(
         for (partition in partitions()) {
             val proposal = partition.prepareIsrChange() ?: continue
             val outcome = try {
-                val version = store.write(partition.tp, proposal.state, proposal.zkVersion)
-                if (version != null) Partition.IsrWriteOutcome.Written(version)
-                else Partition.IsrWriteOutcome.Conflict(store.read(partition.tp))
+                val known = proposal.knownControllerEpoch
+                if (known != null) {
+                    write(partition, proposal, known)
+                } else {
+                    // First ISR write of this leader epoch: learn the znode's controller_epoch to preserve it.
+                    val current = store.read(partition.tp)
+                    if (current == null || current.zkVersion != proposal.zkVersion) Partition.IsrWriteOutcome.Conflict(current)
+                    else write(partition, proposal, current.value.controllerEpoch)
+                }
             } catch (e: Exception) {
                 Partition.IsrWriteOutcome.Failed(e)
             }
             partition.completeIsrChange(proposal, outcome)
         }
+    }
+
+    private fun write(partition: Partition, proposal: Partition.IsrProposal, controllerEpoch: Int): Partition.IsrWriteOutcome {
+        val version = store.write(partition.tp, proposal.stateWith(controllerEpoch), proposal.zkVersion)
+        return if (version != null) Partition.IsrWriteOutcome.Written(version, controllerEpoch)
+        else Partition.IsrWriteOutcome.Conflict(store.read(partition.tp))
     }
 
     private fun loop() {

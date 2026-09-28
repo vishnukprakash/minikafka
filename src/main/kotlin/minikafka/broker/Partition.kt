@@ -48,17 +48,25 @@ class Partition internal constructor(
     /** Role change produced by an applied LeaderAndIsr, reported to the listener after unlocking. */
     internal data class RoleTransition(val tp: TopicPartition, val isLeader: Boolean, val leader: Int, val leaderEpoch: Int)
 
-    /** An ISR change prepared under the lock; [state] is what gets CAS-written at [zkVersion]. */
+    /**
+     * An ISR change prepared under the lock, CAS-written at [zkVersion]. [knownControllerEpoch] is
+     * the state znode's controller_epoch if this partition knows it (it wrote, adopted or pre-read
+     * the znode during this leader epoch), else null: the updater then reads the znode first and
+     * preserves its controller_epoch (algorithm 10), treating a version mismatch as a conflict.
+     */
     internal data class IsrProposal(
+        val leader: Int,
         val leaderEpoch: Int,
         val zkVersion: Int,
         val isr: Set<Int>,
         val shrink: Set<Int>,
-        val state: PartitionState
-    )
+        val knownControllerEpoch: Int?
+    ) {
+        fun stateWith(controllerEpoch: Int) = PartitionState(leader, leaderEpoch, isr.sorted(), controllerEpoch)
+    }
 
     internal sealed interface IsrWriteOutcome {
-        data class Written(val zkVersion: Int) : IsrWriteOutcome
+        data class Written(val zkVersion: Int, val controllerEpoch: Int) : IsrWriteOutcome
         /** The CAS saw a version conflict; [current] is the state znode re-read afterwards. */
         data class Conflict(val current: Versioned<PartitionState>?) : IsrWriteOutcome
         data class Failed(val error: Exception) : IsrWriteOutcome
@@ -72,7 +80,8 @@ class Partition internal constructor(
     private var role = Role.NONE
     private var leader = -1
     private var leaderEpoch = -1
-    private var controllerEpoch = -1
+    /** controller_epoch of the state znode at [zkVersion], or null if not known yet this epoch. */
+    private var znodeControllerEpoch: Int? = null
     private var replicas: List<Int> = emptyList()
     private var committedIsr: Set<Int> = emptySet()
     private var maximalIsr: Set<Int> = emptySet()
@@ -86,7 +95,7 @@ class Partition internal constructor(
     // ---- algorithm 7 (per partition) ----
 
     /** Applies one partition of a LeaderAndIsr; returns null if skipped (leader epoch not newer). */
-    internal fun applyLeaderAndIsr(p: LeaderAndIsrPartition, controllerEpoch: Int): RoleTransition? = lock.withLock {
+    internal fun applyLeaderAndIsr(p: LeaderAndIsrPartition): RoleTransition? = lock.withLock {
         if (closed) return null
         if (p.leaderEpoch <= leaderEpoch) {
             logger.info("b{} {}: LeaderAndIsr skipped: leader epoch {} not newer than local {}", brokerId, tp, p.leaderEpoch, leaderEpoch)
@@ -98,7 +107,9 @@ class Partition internal constructor(
         committedIsr = p.isr.toSet()
         maximalIsr = committedIsr
         zkVersion = p.zkVersion
-        this.controllerEpoch = controllerEpoch
+        // LeaderAndIsr carries no per-partition controller_epoch, and a newer controller may resend
+        // a state an older one wrote: learn the znode's value by reading it before the first ISR write.
+        znodeControllerEpoch = null
         isrStale = false
         followers.clear()
         if (p.leader == brokerId) {
@@ -245,6 +256,9 @@ class Partition internal constructor(
      * Builds the next ISR proposal, or null if nothing to change (not leader, stale, or no change).
      * Shrink: maximal-ISR followers with `now - lastCaughtUp > replicaLagTimeMaxMs`; expand: pending
      * adds (maximalIsr - committedIsr). Captures leaderEpoch/zkVersion for the check on completion.
+     * A lagging *pending* member (whose expansion outcome may be unknown) also forces a write, even
+     * though the proposal then equals committedIsr: it may only leave maximalIsr after a successful
+     * CAS (or an adoption), because a write that threw may in fact have put it in the ZK ISR.
      */
     internal fun prepareIsrChange(): IsrProposal? = lock.withLock {
         if (closed || role != Role.LEADER || isrStale) return null
@@ -253,8 +267,8 @@ class Partition internal constructor(
             r != brokerId && (followers[r]?.let { now - it.lastCaughtUpMs > replicaLagTimeMaxMs } ?: true)
         }.toSet()
         val proposal = maximalIsr - shrink
-        if (proposal == committedIsr) return null
-        IsrProposal(leaderEpoch, zkVersion, proposal, shrink, PartitionState(brokerId, leaderEpoch, proposal.sorted(), controllerEpoch))
+        if (proposal == committedIsr && shrink.isEmpty()) return null
+        IsrProposal(brokerId, leaderEpoch, zkVersion, proposal, shrink, znodeControllerEpoch)
     }
 
     /** Applies the outcome of the CAS for [proposal], only if no LeaderAndIsr intervened. */
@@ -265,21 +279,26 @@ class Partition internal constructor(
                 return
             }
             when (outcome) {
-                is IsrWriteOutcome.Written -> applyIsrLocked(proposal, outcome.zkVersion, "")
+                is IsrWriteOutcome.Written -> applyIsrLocked(proposal, outcome.zkVersion, outcome.controllerEpoch, "")
                 is IsrWriteOutcome.Conflict -> {
-                    val current = outcome.current?.value
-                    if (current != null && current.leader == brokerId && current.leaderEpoch == leaderEpoch &&
-                        current.isr.toSet() == proposal.isr
-                    ) {
-                        applyIsrLocked(proposal, outcome.current.zkVersion, " (adopted after BadVersion)")
-                    } else {
-                        // Conservative: keep committed and maximal ISR as they are (pending adds stay
-                        // counted in HW, so ZK ISR stays a subset of maximalIsr) and stop retrying.
-                        isrStale = true
-                        logger.info(
-                            "b{} {}: ISR CAS to {} rejected (fenced), znode now {}; awaiting LeaderAndIsr",
-                            brokerId, tp, proposal.isr.sorted(), outcome.current
-                        )
+                    val current = outcome.current
+                    val mine = current != null && current.value.leader == brokerId && current.value.leaderEpoch == leaderEpoch
+                    when {
+                        // Our own write already committed (e.g. a replay after ConnectionLoss).
+                        mine && current.value.isr.toSet() == proposal.isr ->
+                            applyIsrLocked(proposal, current.zkVersion, current.value.controllerEpoch, " (adopted after BadVersion)")
+                        // R6: still our leadership and the znode's ISR is covered by maximalIsr (e.g. an
+                        // earlier write committed but threw): adopt it and re-propose next round.
+                        mine && maximalIsr.containsAll(current.value.isr) -> adoptLocked(current)
+                        else -> {
+                            // R5, conservative: keep committed and maximal ISR as they are (pending adds
+                            // stay counted in HW, so ZK ISR stays a subset of maximalIsr); stop retrying.
+                            isrStale = true
+                            logger.info(
+                                "b{} {}: ISR CAS to {} rejected (fenced), znode now {}; awaiting LeaderAndIsr",
+                                brokerId, tp, proposal.isr.sorted(), current
+                            )
+                        }
                     }
                 }
                 is IsrWriteOutcome.Failed ->
@@ -288,11 +307,24 @@ class Partition internal constructor(
         }
     }
 
-    private fun applyIsrLocked(proposal: IsrProposal, newZkVersion: Int, note: String) {
+    private fun adoptLocked(current: Versioned<PartitionState>) {
+        val old = committedIsr
+        committedIsr = current.value.isr.toSet()
+        zkVersion = current.zkVersion
+        znodeControllerEpoch = current.value.controllerEpoch
+        logger.info(
+            "b{} {}: ISR {} -> {} adopted from znode v{} after BadVersion (maximal ISR {} unchanged)",
+            brokerId, tp, old.sorted(), committedIsr.sorted(), zkVersion, maximalIsr.sorted()
+        )
+        stateChanged.signalAll()
+    }
+
+    private fun applyIsrLocked(proposal: IsrProposal, newZkVersion: Int, controllerEpoch: Int, note: String) {
         val old = committedIsr
         committedIsr = proposal.isr
         maximalIsr = maximalIsr - proposal.shrink // shrunk members leave maximal ISR only now
         zkVersion = newZkVersion
+        znodeControllerEpoch = controllerEpoch
         val removed = old - proposal.isr
         val added = proposal.isr - old
         if (removed.isNotEmpty()) logger.info("b{} {}: ISR shrink {} -> {} (removed {}){}", brokerId, tp, old.sorted(), proposal.isr.sorted(), removed.sorted(), note)
