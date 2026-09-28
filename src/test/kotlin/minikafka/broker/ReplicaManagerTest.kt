@@ -428,11 +428,15 @@ class ReplicaManagerTest {
     fun `close stops an idle isr-updater thread promptly`() {
         val rm = ReplicaManager(BrokerConfig(8, "localhost", 0, dir, 1, replicaLagTimeMaxMs = 600_000), FakeIsrStore(), minikafka.testing.MutableClock())
         fun updater() = Thread.getAllStackTraces().keys.filter { it.name == "b8-isr-updater" && it.isAlive }
-        minikafka.testing.eventually { assertEquals(Thread.State.TIMED_WAITING, updater().single().state) }
-        val start = System.nanoTime()
-        rm.close()
-        assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2), "close waits for the 300 s interval")
-        assertTrue(updater().isEmpty())
+        try {
+            minikafka.testing.eventually { assertEquals(Thread.State.TIMED_WAITING, updater().single().state) }
+            val start = System.nanoTime()
+            rm.close()
+            assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2), "close waits for the 300 s interval")
+            assertTrue(updater().isEmpty())
+        } finally {
+            rm.close() // idempotent; never leak the updater thread on a failed assertion
+        }
     }
 
     /** stopReplication runs before the ZooKeeper client closes: it must not return while an ISR write is in flight. */

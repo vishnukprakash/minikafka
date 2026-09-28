@@ -209,26 +209,32 @@ class PartitionTest {
         val partition = Partition(TopicPartition("t", 0), 1, Log(File(dir, "t-0")), MutableClock(), 1, 1_000) {
             expansions.incrementAndGet()
         }
-        partition.applyLeaderAndIsr(LeaderAndIsrPartition("t", 0, 1, 0, listOf(1), listOf(1, 2), 0))
-        partition.produce(null, "a".toByteArray(), ACKS_ONE, 1_000)
-        partition.fetchAsFollower(2, 1, 0, 1 shl 20)
-        assertEquals(1, expansions.get(), "joining the maximal ISR asks the isr-updater to run")
-        partition.fetchAsFollower(2, 1, 0, 1 shl 20)
-        assertEquals(1, expansions.get(), "already a pending member: no second request")
-        partition.close()
+        try {
+            partition.applyLeaderAndIsr(LeaderAndIsrPartition("t", 0, 1, 0, listOf(1), listOf(1, 2), 0))
+            partition.produce(null, "a".toByteArray(), ACKS_ONE, 1_000)
+            partition.fetchAsFollower(2, 1, 0, 1 shl 20)
+            assertEquals(1, expansions.get(), "joining the maximal ISR asks the isr-updater to run")
+            partition.fetchAsFollower(2, 1, 0, 1 shl 20)
+            assertEquals(1, expansions.get(), "already a pending member: no second request")
+        } finally {
+            partition.close()
+        }
     }
 
     @Test
     fun `a partition whose ISR CAS was fenced proposes no further ISR change`() {
         val clock = MutableClock()
         val partition = Partition(TopicPartition("t", 0), 1, Log(File(dir, "t-0")), clock, 1, 1_000) {}
-        partition.applyLeaderAndIsr(LeaderAndIsrPartition("t", 0, 1, 0, listOf(1, 2), listOf(1, 2), 0))
-        clock.advance(1_001)
-        val proposal = partition.prepareIsrChange()!!
-        partition.completeIsrChange(proposal, Partition.IsrWriteOutcome.Conflict(Versioned(PartitionState(2, 1, listOf(2), 1), 9)))
-        assertTrue(partition.snapshot().isrStale)
-        assertNull(partition.prepareIsrChange(), "stale: awaits LeaderAndIsr instead of proposing")
-        partition.close()
+        try {
+            partition.applyLeaderAndIsr(LeaderAndIsrPartition("t", 0, 1, 0, listOf(1, 2), listOf(1, 2), 0))
+            clock.advance(1_001)
+            val proposal = partition.prepareIsrChange()!!
+            partition.completeIsrChange(proposal, Partition.IsrWriteOutcome.Conflict(Versioned(PartitionState(2, 1, listOf(2), 1), 9)))
+            assertTrue(partition.snapshot().isrStale)
+            assertNull(partition.prepareIsrChange(), "stale: awaits LeaderAndIsr instead of proposing")
+        } finally {
+            partition.close()
+        }
     }
 
     // ---- acks ----
