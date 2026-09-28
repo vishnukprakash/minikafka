@@ -3,6 +3,7 @@ package minikafka.broker
 import minikafka.log.Log
 import minikafka.log.Record
 import minikafka.proto.ErrorCodes
+import minikafka.proto.PartitionMetadata
 import minikafka.proto.TopicMetadata
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -45,7 +46,9 @@ class Broker(private val dataDir: File) {
     }
 
     fun listTopics(): List<TopicMetadata> =
-        topics.map { (name, state) -> TopicMetadata(name, state.numPartitions) }
+        topics.map { (name, state) ->
+            TopicMetadata(name, (0 until state.numPartitions).map { PartitionMetadata(it, -1, -1, emptyList(), emptyList()) })
+        }
 
     fun produce(topic: String, key: ByteArray?, value: ByteArray): Triple<Short, Int, Long> {
         val state = topics[topic] ?: return Triple(ErrorCodes.UNKNOWN_TOPIC, -1, -1L)

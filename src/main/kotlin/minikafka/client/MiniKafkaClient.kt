@@ -21,7 +21,7 @@ class MiniKafkaClient(host: String, port: Int) : Closeable {
     private val connection = Connection(host, port)
 
     fun createTopic(topic: String, numPartitions: Int): Short =
-        connection.request(ApiKeys.CREATE_TOPIC, { CreateTopicRequest(topic, numPartitions).encode(it) }) {
+        connection.request(ApiKeys.CREATE_TOPIC, { CreateTopicRequest(topic, numPartitions, 1).encode(it) }) {
             CreateTopicResponse.decode(it).errorCode
         }
 
@@ -31,7 +31,7 @@ class MiniKafkaClient(host: String, port: Int) : Closeable {
         }
 
     fun produce(topic: String, key: ByteArray?, value: ByteArray): ProduceResponse =
-        connection.request(ApiKeys.PRODUCE, { ProduceRequest(topic, key, value).encode(it) }) {
+        connection.request(ApiKeys.PRODUCE, { ProduceRequest(topic, -1, key, value, 1, 30_000).encode(it) }) {
             ProduceResponse.decode(it)
         }
 

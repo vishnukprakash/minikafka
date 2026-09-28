@@ -44,7 +44,7 @@ class ConnectionHandler(private val socket: Socket, private val broker: Broker) 
                         MetadataRequest.decode(body)
                         val topics = broker.listTopics()
                         writeResponseFrame(output, header.correlationId) { out ->
-                            MetadataResponse(topics).encode(out)
+                            MetadataResponse(-1, emptyList(), topics).encode(out)
                         }
                     }
                     ApiKeys.PRODUCE -> {
@@ -57,9 +57,9 @@ class ConnectionHandler(private val socket: Socket, private val broker: Broker) 
                     ApiKeys.FETCH -> {
                         val request = FetchRequest.decode(body)
                         val (errorCode, records) = broker.fetch(request.topic, request.partition, request.offset, request.maxBytes)
-                        val fetched = records.map { FetchedRecord(it.offset, it.timestamp, it.key, it.value) }
+                        val fetched = records.map { FetchedRecord(it.offset, it.leaderEpoch, it.timestamp, it.key, it.value) }
                         writeResponseFrame(output, header.correlationId) { out ->
-                            FetchResponse(errorCode, fetched).encode(out)
+                            FetchResponse(errorCode, -1L, fetched).encode(out)
                         }
                     }
                     ApiKeys.OFFSET_COMMIT -> {

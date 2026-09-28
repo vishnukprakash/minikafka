@@ -7,16 +7,18 @@ import minikafka.io.writeNullableString
 import java.io.DataInput
 import java.io.DataOutput
 
-data class CreateTopicRequest(val topic: String, val numPartitions: Int) {
+data class CreateTopicRequest(val topic: String, val numPartitions: Int, val replicationFactor: Int) {
     fun encode(out: DataOutput) {
         out.writeNullableString(topic)
         out.writeInt(numPartitions)
+        out.writeInt(replicationFactor)
     }
     companion object {
         fun decode(input: DataInput): CreateTopicRequest {
             val topic = input.readNullableString()!!
             val numPartitions = input.readInt()
-            return CreateTopicRequest(topic, numPartitions)
+            val replicationFactor = input.readInt()
+            return CreateTopicRequest(topic, numPartitions, replicationFactor)
         }
     }
 }
@@ -28,39 +30,74 @@ class MetadataRequest {
     }
 }
 
-data class ProduceRequest(val topic: String, val key: ByteArray?, val value: ByteArray) {
+/**
+ * [partition] is chosen by the client (D13); [acks] is 1 (leader only) or -1 (all ISR); [timeoutMs]
+ * bounds the acks=all wait on the broker.
+ */
+data class ProduceRequest(
+    val topic: String,
+    val partition: Int,
+    val key: ByteArray?,
+    val value: ByteArray,
+    val acks: Short,
+    val timeoutMs: Int
+) {
     fun encode(out: DataOutput) {
         out.writeNullableString(topic)
+        out.writeInt(partition)
         out.writeNullableBytesAsInt32(key)
         out.writeInt(value.size)
         out.write(value)
+        out.writeShort(acks.toInt())
+        out.writeInt(timeoutMs)
     }
     companion object {
         fun decode(input: DataInput): ProduceRequest {
             val topic = input.readNullableString()!!
+            val partition = input.readInt()
             val key = input.readNullableBytesAsInt32()
             val valueLength = input.readInt()
             val value = ByteArray(valueLength)
             input.readFully(value)
-            return ProduceRequest(topic, key, value)
+            val acks = input.readShort()
+            val timeoutMs = input.readInt()
+            return ProduceRequest(topic, partition, key, value, acks, timeoutMs)
         }
     }
 }
 
-data class FetchRequest(val topic: String, val partition: Int, val offset: Long, val maxBytes: Int) {
+/**
+ * [replicaId] is -1 for a consumer, else the fetching follower's broker id; [currentLeaderEpoch]
+ * is -1 for "no check" (consumers), else the follower's view of the leader epoch.
+ */
+data class FetchRequest(
+    val topic: String,
+    val partition: Int,
+    val offset: Long,
+    val maxBytes: Int,
+    val replicaId: Int = CONSUMER_REPLICA_ID,
+    val currentLeaderEpoch: Int = NO_LEADER_EPOCH
+) {
     fun encode(out: DataOutput) {
         out.writeNullableString(topic)
         out.writeInt(partition)
         out.writeLong(offset)
         out.writeInt(maxBytes)
+        out.writeInt(replicaId)
+        out.writeInt(currentLeaderEpoch)
     }
     companion object {
+        const val CONSUMER_REPLICA_ID = -1
+        const val NO_LEADER_EPOCH = -1
+
         fun decode(input: DataInput): FetchRequest {
             val topic = input.readNullableString()!!
             val partition = input.readInt()
             val offset = input.readLong()
             val maxBytes = input.readInt()
-            return FetchRequest(topic, partition, offset, maxBytes)
+            val replicaId = input.readInt()
+            val currentLeaderEpoch = input.readInt()
+            return FetchRequest(topic, partition, offset, maxBytes, replicaId, currentLeaderEpoch)
         }
     }
 }

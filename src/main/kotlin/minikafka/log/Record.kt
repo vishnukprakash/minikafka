@@ -1,20 +1,13 @@
 package minikafka.log
 
 import minikafka.io.readNullableBytesAsInt32
-import minikafka.io.writeNullableBytesAsInt32
-import java.io.ByteArrayOutputStream
+import minikafka.io.recordCrcBody
 import java.io.DataInput
 import java.io.DataOutput
-import java.io.DataOutputStream
-import java.io.IOException
 import java.util.zip.CRC32
 
-/**
- * Thrown by [Record.readFrom] when the stored CRC does not match the record's bytes, i.e. the
- * record was torn or corrupted on disk. Recovery (see [LogSegment]) truncates the log at the
- * first record that raises this.
- */
-class CorruptRecordException(message: String) : IOException(message)
+/** Kept under its historical name; the class itself lives in `io` so `proto` can raise it too (R4). */
+typealias CorruptRecordException = minikafka.io.CorruptRecordException
 
 data class Record(
     val offset: Long,
@@ -52,16 +45,8 @@ data class Record(
             return Record(offset, leaderEpoch, timestamp, key, value)
         }
 
-        private fun encodeBody(leaderEpoch: Int, timestamp: Long, key: ByteArray?, value: ByteArray): ByteArray {
-            val buffer = ByteArrayOutputStream()
-            val out = DataOutputStream(buffer)
-            out.writeInt(leaderEpoch)
-            out.writeLong(timestamp)
-            out.writeNullableBytesAsInt32(key)
-            out.writeInt(value.size)
-            out.write(value)
-            return buffer.toByteArray()
-        }
+        private fun encodeBody(leaderEpoch: Int, timestamp: Long, key: ByteArray?, value: ByteArray): ByteArray =
+            recordCrcBody(leaderEpoch, timestamp, key, value)
 
         private fun crc32Of(bytes: ByteArray): Int {
             val crc = CRC32()
