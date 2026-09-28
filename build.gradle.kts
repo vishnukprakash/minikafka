@@ -10,16 +10,64 @@ repositories {
     mavenCentral()
 }
 
+configurations.all {
+    exclude(group = "ch.qos.logback")
+}
+
 dependencies {
     testImplementation(platform("org.junit:junit-bom:5.10.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    implementation("org.apache.curator:curator-framework:5.9.0")
+    implementation("org.slf4j:slf4j-api:2.0.16")
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
+
+    testImplementation("org.apache.curator:curator-test:5.9.0")
 }
 
 application {
     mainClass.set("minikafka.cli.CliKt")
 }
 
+val excludedTestTags = listOf("e2e", "slow") +
+    (project.findProperty("excludeTags") as String? ?: "")
+        .split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags(*excludedTestTags.toTypedArray())
+    }
+    systemProperty("zookeeper.admin.enableServer", "false")
+    systemProperty("zookeeper.sasl.client", "false")
+}
+
+val e2eTest = tasks.register<Test>("e2eTest") {
+    description = "Runs end-to-end and slow tests against an installed distribution."
+    group = "verification"
+
+    testClassesDirs = tasks.test.get().testClassesDirs
+    classpath = tasks.test.get().classpath
+
+    useJUnitPlatform {
+        includeTags("e2e", "slow")
+    }
+    // No e2e/slow tests exist yet (Task 1); Gradle 9's default fails a Test task that
+    // discovers zero tests, so relax that here until later tasks add e2e/slow tests.
+    failOnNoDiscoveredTests = false
+
+    maxParallelForks = 1
+    dependsOn(tasks.named("installDist"))
+    systemProperty(
+        "minikafka.home",
+        layout.buildDirectory.dir("install/minikafka").get().asFile.absolutePath
+    )
+    systemProperty("zookeeper.admin.enableServer", "false")
+    systemProperty("zookeeper.sasl.client", "false")
+}
+
+tasks.check {
+    dependsOn(e2eTest)
 }
