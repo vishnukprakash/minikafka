@@ -50,6 +50,19 @@ class OffsetIndex(private val file: File, private val baseOffset: Long) {
         return result
     }
 
+    /**
+     * Removes every entry for an offset >= [offset] and shrinks the file to match, so a lookup can
+     * never return a position past the (truncated) end of the segment. [offset] <= baseOffset
+     * empties the index. Always leaves the file in place (creating it if missing).
+     */
+    @Synchronized
+    fun truncateTo(offset: Long) {
+        val relativeTarget = offset - baseOffset
+        val keep = entries.count { it.first < relativeTarget }
+        while (entries.size > keep) entries.removeAt(entries.lastIndex)
+        RandomAccessFile(file, "rw").use { it.setLength(keep.toLong() * ENTRY_SIZE) }
+    }
+
     companion object {
         private const val ENTRY_SIZE = 8
     }

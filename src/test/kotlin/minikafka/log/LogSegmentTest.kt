@@ -57,4 +57,20 @@ class LogSegmentTest {
         assertEquals(2, records.size)
         recovered.close()
     }
+
+    @Test
+    fun `exposes epoch start offsets recovered from its records`(@TempDir tempDir: File) {
+        val segment = LogSegment(tempDir, baseOffset = 0L)
+        val epochs = listOf(0, 0, 2, 2, 2, 5)
+        epochs.forEachIndexed { i, e -> segment.append(Record(i.toLong(), e, 1000L, null, "v$i".toByteArray())) }
+        assertEquals(listOf(0 to 0L, 2 to 2L, 5 to 5L), segment.epochStarts())
+        segment.close()
+
+        val reopened = LogSegment(tempDir, baseOffset = 0L)
+        assertEquals(listOf(0 to 0L, 2 to 2L, 5 to 5L), reopened.epochStarts())
+        reopened.truncateTo(3L)
+        assertEquals(listOf(0 to 0L, 2 to 2L), reopened.epochStarts())
+        assertEquals(3L, reopened.nextOffset)
+        reopened.close()
+    }
 }
