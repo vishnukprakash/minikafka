@@ -115,3 +115,26 @@ data class OffsetFetchResponse(val errorCode: Short, val offset: Long) {
         }
     }
 }
+
+data class LeaderAndIsrResponse(val errorCode: Short) {
+    fun encode(out: DataOutput) { out.writeShort(errorCode.toInt()) }
+    companion object {
+        fun decode(input: DataInput): LeaderAndIsrResponse = LeaderAndIsrResponse(input.readShort())
+    }
+}
+
+data class OffsetsForLeaderEpochResponse(val errorCode: Short, val leaderEpoch: Int, val endOffset: Long) {
+    fun encode(out: DataOutput) {
+        out.writeShort(errorCode.toInt())
+        out.writeInt(leaderEpoch)
+        out.writeLong(endOffset)
+    }
+    companion object {
+        fun decode(input: DataInput): OffsetsForLeaderEpochResponse {
+            val errorCode = input.readShort()
+            val leaderEpoch = input.readInt()
+            val endOffset = input.readLong()
+            return OffsetsForLeaderEpochResponse(errorCode, leaderEpoch, endOffset)
+        }
+    }
+}

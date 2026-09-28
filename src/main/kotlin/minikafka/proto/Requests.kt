@@ -98,3 +98,90 @@ data class OffsetFetchRequest(val group: String, val topic: String, val partitio
         }
     }
 }
+
+data class LeaderAndIsrPartition(
+    val topic: String,
+    val partition: Int,
+    val leader: Int,
+    val leaderEpoch: Int,
+    val isr: List<Int>,
+    val replicas: List<Int>,
+    val zkVersion: Int
+) {
+    fun encode(out: DataOutput) {
+        out.writeNullableString(topic)
+        out.writeInt(partition)
+        out.writeInt(leader)
+        out.writeInt(leaderEpoch)
+        out.writeInt(isr.size)
+        isr.forEach { out.writeInt(it) }
+        out.writeInt(replicas.size)
+        replicas.forEach { out.writeInt(it) }
+        out.writeInt(zkVersion)
+    }
+    companion object {
+        fun decode(input: DataInput): LeaderAndIsrPartition {
+            val topic = input.readNullableString()!!
+            val partition = input.readInt()
+            val leader = input.readInt()
+            val leaderEpoch = input.readInt()
+            val isrCount = input.readInt()
+            val isr = (0 until isrCount).map { input.readInt() }
+            val replicasCount = input.readInt()
+            val replicas = (0 until replicasCount).map { input.readInt() }
+            val zkVersion = input.readInt()
+            return LeaderAndIsrPartition(topic, partition, leader, leaderEpoch, isr, replicas, zkVersion)
+        }
+    }
+}
+
+data class LeaderAndIsrRequest(
+    val controllerId: Int,
+    val controllerEpoch: Int,
+    val brokerEpoch: Long,
+    val partitions: List<LeaderAndIsrPartition>
+) {
+    fun encode(out: DataOutput) {
+        out.writeInt(controllerId)
+        out.writeInt(controllerEpoch)
+        out.writeLong(brokerEpoch)
+        out.writeInt(partitions.size)
+        partitions.forEach { it.encode(out) }
+    }
+    companion object {
+        fun decode(input: DataInput): LeaderAndIsrRequest {
+            val controllerId = input.readInt()
+            val controllerEpoch = input.readInt()
+            val brokerEpoch = input.readLong()
+            val count = input.readInt()
+            val partitions = (0 until count).map { LeaderAndIsrPartition.decode(input) }
+            return LeaderAndIsrRequest(controllerId, controllerEpoch, brokerEpoch, partitions)
+        }
+    }
+}
+
+data class OffsetsForLeaderEpochRequest(
+    val topic: String,
+    val partition: Int,
+    val replicaId: Int,
+    val currentLeaderEpoch: Int,
+    val requestedEpoch: Int
+) {
+    fun encode(out: DataOutput) {
+        out.writeNullableString(topic)
+        out.writeInt(partition)
+        out.writeInt(replicaId)
+        out.writeInt(currentLeaderEpoch)
+        out.writeInt(requestedEpoch)
+    }
+    companion object {
+        fun decode(input: DataInput): OffsetsForLeaderEpochRequest {
+            val topic = input.readNullableString()!!
+            val partition = input.readInt()
+            val replicaId = input.readInt()
+            val currentLeaderEpoch = input.readInt()
+            val requestedEpoch = input.readInt()
+            return OffsetsForLeaderEpochRequest(topic, partition, replicaId, currentLeaderEpoch, requestedEpoch)
+        }
+    }
+}
