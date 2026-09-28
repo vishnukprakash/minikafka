@@ -197,7 +197,13 @@ private fun runConsume(args: List<String>) {
                 println("offset=${record.offset} key=$key value=${String(record.value, Charsets.UTF_8)}")
                 offset = record.offset + 1
             }
-            if (group != null && response.records.isNotEmpty()) client.commitOffset(group, topic, partition, offset)
+            if (group != null && response.records.isNotEmpty()) {
+                val code = client.commitOffset(group, topic, partition, offset)
+                if (code != ErrorCodes.NONE) {
+                    System.err.println("error committing offset $offset for group $group: code $code")
+                    kotlin.system.exitProcess(1)
+                }
+            }
             if (response.records.isEmpty() || offset >= response.highWatermark) break
         }
     }

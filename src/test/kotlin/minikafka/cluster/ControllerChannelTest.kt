@@ -20,11 +20,16 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
 
 class ControllerChannelTest {
-    /** A fake broker: records every LeaderAndIsr and answers with [answer] (called with the 0-based request index). */
-    private class FakeBroker(private val answer: (Int) -> Short) : AutoCloseable {
+    /**
+     * A fake broker: records every LeaderAndIsr and answers with [answer] (called with the 0-based
+     * request index, after recording it; it may block); a null answer never replies.
+     */
+    private class FakeBroker(private val answer: (Int) -> Short?) : AutoCloseable {
         private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
         val received = CopyOnWriteArrayList<LeaderAndIsrRequest>()
         val port = server.localPort
@@ -42,9 +47,10 @@ class ControllerChannelTest {
                                     val (header, body) = readFrameHeader(input)
                                     check(header.apiKey == ApiKeys.LEADER_AND_ISR)
                                     val request = LeaderAndIsrRequest.decode(body)
-                                    val code = answer(received.size)
+                                    val index = received.size
                                     received += request
-                                    writeResponseFrame(output, header.correlationId) { LeaderAndIsrResponse(code).encode(it) }
+                                    val code = answer(index)
+                                    if (code != null) writeResponseFrame(output, header.correlationId) { LeaderAndIsrResponse(code).encode(it) }
                                 }
                             } catch (_: IOException) {
                             } finally {
@@ -108,5 +114,30 @@ class ControllerChannelTest {
         channel.send(2, 7, listOf(partition))
         eventually { assertEquals(1, broker.received.size) }
         alwaysFor(200.milliseconds) { assertEquals(1, broker.received.size) }
+    }
+
+    @Test
+    fun `a bounce discards what was queued for the old incarnation`() {
+        val gate = CountDownLatch(1)
+        // The old incarnation holds its answer to the first request until the gate opens.
+        val old = FakeBroker { index -> if (index == 0) gate.await(10, TimeUnit.SECONDS); ErrorCodes.NONE }.also { closeables += it }
+        val fresh = FakeBroker { ErrorCodes.NONE }.also { closeables += it }
+        val channel = ControllerChannel(myBrokerId = 1, socketTimeoutMs = 30_000, retryBackoffMs = 20).also { closeables += it }
+        channel.addBroker(BrokerInfo(2, "127.0.0.1", old.port), brokerEpoch = 42)
+        channel.send(2, 7, listOf(partition))
+        eventually { assertEquals(1, old.received.size) } // in flight, not answered yet
+        channel.send(2, 7, listOf(partition.copy(leaderEpoch = 4)))
+        channel.send(2, 7, listOf(partition.copy(leaderEpoch = 5)))
+
+        // The broker bounced (new czxid, new port): the queue for epoch 42 is dropped, not delivered.
+        channel.addBroker(BrokerInfo(2, "127.0.0.1", fresh.port), brokerEpoch = 43)
+        assertEquals(mapOf(2 to 43L), channel.brokerEpochs())
+        channel.send(2, 8, listOf(partition.copy(leaderEpoch = 6)))
+        gate.countDown() // a sender still bound to epoch 42 would now get its answer and send the rest
+        eventually { assertEquals(1, fresh.received.size) }
+        alwaysFor(300.milliseconds) {
+            assertEquals(listOf(LeaderAndIsrRequest(1, 8, 43, listOf(partition.copy(leaderEpoch = 6)))), fresh.received.toList())
+            assertEquals(1, old.received.size, "nothing more reached the old incarnation")
+        }
     }
 }
