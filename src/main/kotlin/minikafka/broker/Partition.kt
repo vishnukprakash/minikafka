@@ -187,6 +187,13 @@ class Partition internal constructor(
             if (replicaId == brokerId || replicaId !in replicas) {
                 return FetchResult(ErrorCodes.REPLICA_NOT_ASSIGNED, emptyList(), -1L)
             }
+            // A replica fetch must name its leader epoch: -1 ("no check") is for consumers only, and
+            // would otherwise let an unfenced fetch move follower LEO / HW. -1 is older than any
+            // real epoch (>= 0), hence FENCED_LEADER_EPOCH (the fetcher waits for a LeaderAndIsr).
+            if (currentLeaderEpoch < 0) {
+                logger.info("b{} {}: fetch from replica {} rejected FENCED_LEADER_EPOCH: no leader epoch ({})", brokerId, tp, replicaId, currentLeaderEpoch)
+                return FetchResult(ErrorCodes.FENCED_LEADER_EPOCH, emptyList(), -1L)
+            }
             checkEpochLocked(currentLeaderEpoch, "fetch from replica $replicaId")?.let {
                 return FetchResult(it, emptyList(), -1L)
             }

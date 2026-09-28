@@ -340,8 +340,21 @@ class PartitionTest {
             assertEquals(ErrorCodes.UNKNOWN_LEADER_EPOCH, h.followerFetch(2, 1, epoch = 4).errorCode)
             assertEquals(-1L, h.state().followerLeos[2])
             assertEquals(0L, h.state().highWatermark)
-            assertEquals(ErrorCodes.NONE, h.followerFetch(2, 1, epoch = -1).errorCode, "-1 = no epoch check")
+            assertEquals(ErrorCodes.NONE, h.followerFetch(2, 1, epoch = 3).errorCode)
             assertEquals(1L, h.state().highWatermark)
+        }
+    }
+
+    @Test
+    fun `follower fetch without a leader epoch (-1) is FENCED and not recorded`() {
+        ReplicaHarness(dir).use { h ->
+            h.leaderAndIsr(1, 3, listOf(1, 2), listOf(1, 2))
+            h.produce("a")
+            assertEquals(ErrorCodes.FENCED_LEADER_EPOCH, h.followerFetch(2, 1, epoch = -1).errorCode,
+                "a replica fetch must name its leader epoch; -1 skips fencing only for consumers")
+            assertEquals(-1L, h.state().followerLeos[2])
+            assertEquals(0L, h.state().highWatermark)
+            assertEquals(listOf(1, 2), h.state().maximalIsr)
         }
     }
 
