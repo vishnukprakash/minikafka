@@ -14,6 +14,7 @@ import minikafka.proto.ProduceResponse
 import minikafka.testing.TestCluster
 import minikafka.testing.TestClusterExtension
 import minikafka.testing.eventually
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.io.IOException
+import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.time.Duration.Companion.seconds
 
@@ -45,8 +47,32 @@ class ClientRoutingTest {
     private fun client(bootstrap: List<HostPort>, config: ClientConfig = cluster.clientConfig()) =
         MiniKafkaClient(bootstrap, config)
 
-    /** A port nothing listens on. */
-    private fun deadAddress(): HostPort = ServerSocket(0).use { HostPort("127.0.0.1", it.localPort) }
+    /** Listeners holding the ports handed out by [deadAddress]; closed after each test. */
+    private val held = mutableListOf<ServerSocket>()
+
+    @AfterEach
+    fun releaseDeadPorts() {
+        held.forEach { runCatching { it.close() } }
+        held.clear()
+    }
+
+    /**
+     * A dead broker address, guaranteed for the rest of the test: the port stays held by a listener
+     * of ours (so no broker or other socket can take it over) that resets every connection at once,
+     * so every request to it fails with an IOException. (A bound but non-listening socket would not
+     * do: on macOS a SYN to it is dropped, so connects hang until their timeout instead.)
+     */
+    private fun deadAddress(): HostPort {
+        val listener = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        held += listener
+        Thread({
+            while (!listener.isClosed) {
+                val conn = runCatching { listener.accept() }.getOrNull() ?: break
+                runCatching { conn.setSoLinger(true, 0); conn.close() } // RST
+            }
+        }, "dead-broker-${listener.localPort}").apply { isDaemon = true }.start()
+        return HostPort("127.0.0.1", listener.localPort)
+    }
 
     @Test
     fun `a client bootstrapped from any single broker reaches every partition leader`() {

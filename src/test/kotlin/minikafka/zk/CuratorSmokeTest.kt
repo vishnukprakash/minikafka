@@ -1,27 +1,26 @@
 package minikafka.zk
 
+import minikafka.testing.EmbeddedZk
 import org.apache.curator.framework.CuratorFrameworkFactory
 import org.apache.curator.retry.RetryOneTime
-import org.apache.curator.test.InstanceSpec
-import org.apache.curator.test.TestingServer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import java.nio.charset.StandardCharsets
 
 /**
- * Task 1 smoke test: proves Curator + an in-process ZooKeeper TestingServer work on this JDK,
- * before any real ZK-backed code is written.
+ * Task 1 smoke test: proves Curator + an in-process ZooKeeper server work on this JDK. Originally
+ * on Curator's raw `TestingServer`; now on [EmbeddedZk] (the hardened server every other ZooKeeper
+ * test uses, tickTime 200ms), so this test cannot hit the port-shadowing flake either.
  */
 @Tag("zk")
 class CuratorSmokeTest {
 
     @Test
-    fun `TestingServer starts, Curator client connects, and negotiated session timeout matches request`() {
+    fun `embedded ZooKeeper starts, Curator client connects, and negotiated session timeout matches request`() {
         val requestedSessionTimeoutMs = 3000
 
-        val instanceSpec = InstanceSpec(null, -1, -1, -1, true, -1, 200, -1)
-        TestingServer(instanceSpec, true).use { zkServer ->
+        EmbeddedZk().use { zkServer ->
             val client = CuratorFrameworkFactory.builder()
                 .connectString(zkServer.connectString)
                 .retryPolicy(RetryOneTime(100))

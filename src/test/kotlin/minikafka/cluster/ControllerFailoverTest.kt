@@ -365,6 +365,45 @@ class ControllerFailoverTest {
     }
 
     @Test
+    fun `a bounce of the sole ISR member is handled in one pass as death then start (epoch+2, leader back)`() {
+        cluster.replicatedTopic("solo", partitions = 3)
+        val controller = cluster.awaitController()
+        val p = (0 until 3).first { cluster.awaitLeader("solo", it) != controller }
+        val victim = cluster.awaitLeader("solo", p)
+        val followers = cluster.replicasOf("solo", p).filter { it != victim }
+        followers.forEach { cluster.pauseFetchers(it) }
+        cluster.awaitIsr("solo", p, setOf(victim))
+        assertEquals(ErrorCodes.NONE, cluster.client().produce("solo", null, "kept".toByteArray(), acks = 1, partition = p).errorCode)
+        val before = cluster.partitionState("solo", p)!!.value
+
+        // One BrokersChanged sees the victim with a new czxid: death (no eligible ISR member ⇒
+        // offline, epoch+1) and then start (the returned sole ISR member is elected, epoch+2).
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val once = AtomicBoolean()
+        cluster.broker(controller).controller.beforeEvent = { event ->
+            if (event is ControllerEvent.BrokersChanged && once.compareAndSet(false, true)) {
+                held.countDown()
+                release.await()
+            }
+        }
+        cluster.stopBroker(victim)
+        assertTrue(held.await(10, TimeUnit.SECONDS))
+        cluster.startBroker(victim)
+        release.countDown()
+
+        assertEquals(victim, cluster.awaitLeader("solo", p))
+        val after = cluster.partitionState("solo", p)!!.value
+        assertEquals(before.leaderEpoch + 2, after.leaderEpoch, "offline step then re-election, in one pass")
+        assertEquals(listOf(victim), after.isr, "ISR = the sole member (no unclean election)")
+        assertEquals(1, after.controllerEpoch)
+        eventually { assertEquals(listOf("kept"), cluster.client().fetch("solo", p, 0).records.map { String(it.value) }) }
+        followers.forEach { cluster.pauseFetchers(it, paused = false) }
+        cluster.awaitFullyReplicated("solo")
+        cluster.assertReplicasConsistent("solo")
+    }
+
+    @Test
     fun `a broker cut off from ZooKeeper keeps serving its partitions and rejoins when healed`() {
         val controller = cluster.awaitController()
         val victim = cluster.brokerIds.first { it != controller }
