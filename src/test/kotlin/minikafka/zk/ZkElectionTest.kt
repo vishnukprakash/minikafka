@@ -81,4 +81,17 @@ class ZkElectionTest : ZkTestBase() {
         assertEquals(1, election.epoch)
         assertEquals(zk.controllerEpoch().zkVersion, election.epochZkVersion)
     }
+
+    @Test
+    fun `own-session controller node not created by the epoch-bumping transaction is not treated as a win`() {
+        val zk = newStore()
+        zk.ensureControllerEpochNode()
+        // /controller owned by this session, but /controller_epoch was last written by a different
+        // zxid: an epoch read here could belong to someone else's election, so it must not be claimed.
+        zk.curator.create().withMode(CreateMode.EPHEMERAL)
+            .forPath(ZkPaths.CONTROLLER, KvCodec.encode(mapOf("brokerid" to "4")))
+
+        assertNull(zk.electController(4))
+        assertEquals(0, zk.controllerEpoch().value)
+    }
 }

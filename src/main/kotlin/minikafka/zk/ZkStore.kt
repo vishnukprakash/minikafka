@@ -238,12 +238,16 @@ class ZkStore(
      * Fenced `multi(check(/controller_epoch, epochZkVersion), create(state))`. Parent znodes
      * (`partitions`, `partitions/<p>`) are created outside the transaction, but never the topic
      * znode itself (it is the topic's commit point and must already exist).
+     *
+     * @throws IllegalStateException if the topic's assignment znode does not exist.
+     * @throws KeeperException (e.g. ConnectionLoss, SessionExpired) if ZooKeeper stays unreachable
+     *   after Curator's retries; the write's outcome is then unknown.
      */
     fun fencedCreatePartitionState(tp: TopicPartition, state: PartitionState, epochZkVersion: Int): FencedWriteResult {
         try {
             for (parent in listOf(ZkPaths.partitions(tp.topic), ZkPaths.partition(tp))) {
                 try {
-                    curator.create().forPath(parent)
+                    curator.create().forPath(parent, ByteArray(0))
                 } catch (_: KeeperException.NodeExistsException) {
                 }
             }
@@ -254,7 +258,12 @@ class ZkStore(
         return fencedWrite(tp, state, epochZkVersion, op, FencedWriteResult.AlreadyExists)
     }
 
-    /** Fenced `multi(check(/controller_epoch, epochZkVersion), setData(state, expectedStateVersion))`. */
+    /**
+     * Fenced `multi(check(/controller_epoch, epochZkVersion), setData(state, expectedStateVersion))`.
+     *
+     * @throws KeeperException (e.g. ConnectionLoss, SessionExpired) if ZooKeeper stays unreachable
+     *   after Curator's retries; the write's outcome is then unknown.
+     */
     fun fencedSetPartitionState(
         tp: TopicPartition,
         state: PartitionState,
@@ -321,12 +330,37 @@ class ZkStore(
         dataOrNull(ZkPaths.CONTROLLER)?.let { KvCodec.decode(it)["brokerid"]?.toIntOrNull() }
 
     /**
-     * One election attempt (D2): `multi(create EPHEMERAL /controller, setData(/controller_epoch, e+1, ver))`.
-     * Returns the won epoch, or null if another broker is controller. If the multi fails (NodeExists,
-     * BadVersion, ConnectionLoss) but `/controller` is owned by this session, our earlier attempt
-     * committed (D16): that is a win, with the epoch re-read from ZK.
+     * Controller election (D2): `multi(create EPHEMERAL /controller, setData(/controller_epoch, e+1, ver))`.
+     *
+     * Returns the won epoch, or null if `/controller` exists and belongs to another session (the
+     * caller should then watch `/controller`). If the multi fails (NodeExists, BadVersion,
+     * ConnectionLoss) it is recognised as our own committed election (D16) only if `/controller` is
+     * owned by this session **and** `/controller_epoch` was last modified by the very transaction
+     * that created `/controller` (epoch `mzxid` == controller `czxid`); the epoch returned comes from
+     * that same read, so a newer controller's epoch can never be mistaken for ours. If the multi
+     * fails and `/controller` is absent (someone won, then died), the attempt is retried once;
+     * a second such failure also returns null.
+     *
+     * @throws KeeperException if ZooKeeper stays unreachable after Curator's retries.
      */
     fun electController(brokerId: Int): ControllerElection? {
+        repeat(2) {
+            when (val outcome = tryElect(brokerId)) {
+                is ElectionAttempt.Won -> return outcome.election
+                ElectionAttempt.OtherController -> return null
+                ElectionAttempt.NoController -> {} // retry once
+            }
+        }
+        return null
+    }
+
+    private sealed interface ElectionAttempt {
+        data class Won(val election: ControllerElection) : ElectionAttempt
+        data object OtherController : ElectionAttempt
+        data object NoController : ElectionAttempt
+    }
+
+    private fun tryElect(brokerId: Int): ElectionAttempt {
         val current = controllerEpoch()
         val newEpoch = current.value + 1
         try {
@@ -338,20 +372,23 @@ class ZkStore(
             )
             val epochStat = results.first { it.type == OperationType.SET_DATA }.resultStat
             log.info("Broker {} elected controller with epoch {}", brokerId, newEpoch)
-            return ControllerElection(newEpoch, epochStat.version)
+            return ElectionAttempt.Won(ControllerElection(newEpoch, epochStat.version))
         } catch (e: KeeperException) {
             if (e !is KeeperException.NodeExistsException &&
                 e !is KeeperException.BadVersionException &&
                 e !is KeeperException.ConnectionLossException
             ) throw e
         }
-        val owner = curator.checkExists().forPath(ZkPaths.CONTROLLER)?.ephemeralOwner
-        if (owner != null && owner == sessionId()) {
-            val epoch = controllerEpoch()
-            log.info("Broker {} recognised its own committed election: controller with epoch {}", brokerId, epoch.value)
-            return ControllerElection(epoch.value, epoch.zkVersion)
+        // Read the epoch first, then /controller: both must come from the same (our) transaction.
+        val epochStat = Stat()
+        val epochData = curator.data.storingStatIn(epochStat).forPath(ZkPaths.CONTROLLER_EPOCH)
+        val controllerStat = curator.checkExists().forPath(ZkPaths.CONTROLLER) ?: return ElectionAttempt.NoController
+        if (controllerStat.ephemeralOwner == sessionId() && epochStat.mzxid == controllerStat.czxid) {
+            val epoch = String(epochData, Charsets.UTF_8).trim().toInt()
+            log.info("Broker {} recognised its own committed election: controller with epoch {}", brokerId, epoch)
+            return ElectionAttempt.Won(ControllerElection(epoch, epochStat.version))
         }
-        return null
+        return ElectionAttempt.OtherController
     }
 
     // ------------------------------------------------------------------ consumer offsets

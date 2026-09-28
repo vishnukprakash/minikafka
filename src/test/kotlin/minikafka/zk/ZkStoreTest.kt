@@ -173,7 +173,7 @@ class ZkStoreTest : ZkTestBase() {
     }
 
     @Test
-    fun `watchNode returns null for a missing node and fires on creation, then on data change`() {
+    fun `watchNode returns null for a missing node and fires on creation, then on deletion`() {
         val watcher = newStore()
         val other = newStore()
         val fired = AtomicInteger()
@@ -186,6 +186,19 @@ class ZkStoreTest : ZkTestBase() {
         other.close() // ephemeral /controller deleted
         eventually { assertEquals(2, fired.get()) }
         assertNull(watcher.currentController())
+    }
+
+    @Test
+    fun `watchNode fires on a data change`() {
+        val watcher = newStore()
+        val other = newStore()
+        watcher.ensureControllerEpochNode()
+        val fired = AtomicInteger()
+
+        assertEquals("0", String(watcher.watchNode(ZkPaths.CONTROLLER_EPOCH) { fired.incrementAndGet() }!!))
+        other.electController(1) // bumps /controller_epoch to 1
+        eventually { assertEquals(1, fired.get()) }
+        assertEquals("1", String(watcher.watchNode(ZkPaths.CONTROLLER_EPOCH) { fired.incrementAndGet() }!!))
     }
 
     @Test
