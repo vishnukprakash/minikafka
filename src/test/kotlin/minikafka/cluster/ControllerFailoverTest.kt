@@ -220,6 +220,78 @@ class ControllerFailoverTest {
         assertEquals(2, cluster.broker(target).snapshot().seenControllerEpoch)
     }
 
+    /**
+     * A newer controller (id 99, not a broker of this cluster, held by the admin session) takes
+     * over behind the active controller's back: one transaction replaces `/controller` and bumps
+     * `/controller_epoch`, exactly what a real successor's election commits. The old controller is
+     * not watching `/controller`, so only its next fenced write can tell it. Returns the new epoch.
+     */
+    private fun takeOverControllerExternally(): Int {
+        val admin = cluster.admin()
+        val next = admin.controllerEpoch().value + 1
+        admin.curator.transaction().forOperations(
+            admin.curator.transactionOp().delete().forPath(ZkPaths.CONTROLLER),
+            admin.curator.transactionOp().create().withMode(CreateMode.EPHEMERAL)
+                .forPath(ZkPaths.CONTROLLER, KvCodec.encode(mapOf("brokerid" to "99"))),
+            admin.curator.transactionOp().setData().forPath(ZkPaths.CONTROLLER_EPOCH, next.toString().toByteArray())
+        )
+        return next
+    }
+
+    /** After the foreign controller goes away, the brokers compete again: one wins with [foreignEpoch] + 1. */
+    private fun releaseForeignControllerAndAwaitSuccessor(foreignEpoch: Int): Int {
+        cluster.admin().curator.delete().forPath(ZkPaths.CONTROLLER)
+        val next = cluster.awaitController()
+        assertEquals(foreignEpoch + 1, cluster.controllerEpoch())
+        assertEquals(listOf(next), cluster.runningBrokers().filter { cluster.broker(it).isController() }, "exactly one active controller")
+        return next
+    }
+
+    @Test
+    fun `a controller fenced while electing a leader resigns and competes again`() {
+        cluster.replicatedTopic("fence", partitions = 3)
+        val old = cluster.awaitController()
+        val p = (0 until 3).first { cluster.awaitLeader("fence", it) != old }
+        val before = cluster.partitionState("fence", p)!!
+        val foreignEpoch = takeOverControllerExternally()
+
+        cluster.stopBroker(before.value.leader) // the old controller's BrokersChanged needs an election for p
+
+        eventually { assertFalse(cluster.broker(old).isController(), "the fenced controller must resign") }
+        assertEquals(-1, cluster.broker(old).controller.activeEpoch)
+        alwaysFor(300.milliseconds) {
+            assertEquals(before, cluster.partitionState("fence", p), "the fenced write left the state untouched")
+            assertTrue(cluster.runningBrokers().none { cluster.broker(it).isController() }, "only the foreign controller is active")
+        }
+
+        // Only the resigned controller is left to compete: it must be watching /controller again.
+        cluster.runningBrokers().filter { it != old }.forEach(cluster::stopBroker)
+        assertEquals(old, releaseForeignControllerAndAwaitSuccessor(foreignEpoch))
+        assertEquals(old, cluster.awaitLeader("fence", p), "the only live ISR member")
+        val after = cluster.partitionState("fence", p)!!.value
+        assertEquals(before.value.leaderEpoch + 1, after.leaderEpoch)
+        assertEquals(foreignEpoch + 1, after.controllerEpoch)
+    }
+
+    @Test
+    fun `a controller fenced while creating a new topic's state resigns and competes again`() {
+        val old = cluster.awaitController()
+        val foreignEpoch = takeOverControllerExternally()
+
+        assertEquals(ErrorCodes.NONE, cluster.client().createTopic("fresh", 1, replicationFactor = 3))
+
+        eventually { assertFalse(cluster.broker(old).isController(), "the fenced controller must resign") }
+        alwaysFor(300.milliseconds) { assertNull(cluster.partitionState("fresh", 0), "the fenced create wrote nothing") }
+
+        // Only the resigned controller is left to compete: it must be watching /controller again.
+        cluster.brokerIds.filter { it != old }.forEach(cluster::stopBroker)
+        assertEquals(old, releaseForeignControllerAndAwaitSuccessor(foreignEpoch))
+        assertEquals(old, cluster.awaitLeader("fresh", 0))
+        val state = cluster.partitionState("fresh", 0)!!.value
+        assertEquals(0, state.leaderEpoch)
+        assertEquals(foreignEpoch + 1, state.controllerEpoch)
+    }
+
     @Test
     fun `a broker seeds its seen controller epoch from ZooKeeper at startup`() {
         cluster.brokerIds.forEach(cluster::stopBroker)
