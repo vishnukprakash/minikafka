@@ -22,8 +22,10 @@ dependencies {
     implementation("org.apache.curator:curator-framework:5.9.0")
     implementation("org.slf4j:slf4j-api:2.0.16")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
-    // `minikafka zk` runs ZooKeeperServerMain, whose server side needs these at runtime
-    // (same versions curator-test brings for TestingServer).
+    // `minikafka zk` runs ZooKeeperServerMain, which needs these at runtime (same versions
+    // curator-test brings for TestingServer): metrics-core for ServerMetrics, and snappy-java
+    // because ZooKeeper 3.9's SnapStream loads SnappyOutputStream even with the default
+    // (uncompressed) snapshot format — without it the server thread dies with NoClassDefFoundError.
     runtimeOnly("io.dropwizard.metrics:metrics-core:3.2.5")
     runtimeOnly("org.xerial.snappy:snappy-java:1.1.10.4")
 

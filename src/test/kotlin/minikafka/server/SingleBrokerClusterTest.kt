@@ -58,6 +58,7 @@ class SingleBrokerClusterTest {
     fun `produces and fetches keyed messages end to end`() {
         val client = cluster.client()
         assertEquals(ErrorCodes.NONE, client.createTopic("orders", 2))
+        (0 until 2).forEach { cluster.awaitLeader("orders", it) }
 
         val response1 = client.produce("orders", "user-1".toByteArray(), "first".toByteArray())
         val response2 = client.produce("orders", "user-1".toByteArray(), "second".toByteArray())
@@ -82,6 +83,7 @@ class SingleBrokerClusterTest {
     fun `acks 1 and acks all both succeed and unsupported acks are rejected`() {
         val client = cluster.client()
         client.createTopic("t", 1)
+        cluster.awaitLeader("t", 0)
         assertEquals(ErrorCodes.NONE, client.produce("t", null, "a".toByteArray(), acks = MiniKafkaClient.ACKS_LEADER).errorCode)
         assertEquals(ErrorCodes.NONE, client.produce("t", null, "b".toByteArray(), acks = MiniKafkaClient.ACKS_ALL).errorCode)
         assertEquals(ErrorCodes.INVALID_REQUIRED_ACKS, client.produce("t", null, "c".toByteArray(), acks = 0).errorCode)
@@ -95,6 +97,7 @@ class SingleBrokerClusterTest {
     fun `commits and fetches a consumer offset end to end`() {
         val client = cluster.client()
         client.createTopic("orders", 1)
+        cluster.awaitLeader("orders", 0)
         client.produce("orders", null, "a".toByteArray())
         client.produce("orders", null, "b".toByteArray())
 
@@ -181,6 +184,7 @@ class SingleBrokerClusterTest {
     fun `restart retains data for hyphenated topic 'my-topic'`() {
         val client = cluster.client()
         assertEquals(ErrorCodes.NONE, client.createTopic("my-topic", 2))
+        (0 until 2).forEach { cluster.awaitLeader("my-topic", it) }
         val produced = client.produce("my-topic", null, "test-message".toByteArray())
         assertEquals(ErrorCodes.NONE, produced.errorCode)
         assertEquals(0L, produced.offset)
@@ -189,6 +193,7 @@ class SingleBrokerClusterTest {
         cluster.restartBroker(1)
         assertEquals(1, cluster.awaitController())
         assertEquals(epochBefore + 1, cluster.controllerEpoch())
+        (0 until 2).forEach { cluster.awaitLeader("my-topic", it) }
 
         cluster.client().use { restarted ->
             val topics = restarted.metadata().topics
@@ -207,6 +212,7 @@ class SingleBrokerClusterTest {
     fun `consume-style fetch stops at the high watermark`() {
         val client = cluster.client()
         client.createTopic("t", 1)
+        cluster.awaitLeader("t", 0)
         repeat(5) { client.produce("t", null, "m$it".toByteArray(), partition = 0) }
         var offset = 0L
         val seen = mutableListOf<String>()

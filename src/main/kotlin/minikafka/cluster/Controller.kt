@@ -114,16 +114,26 @@ class Controller(
                 break
             } catch (e: Exception) {
                 if (!running) break
-                retryEvent = when {
-                    event == ControllerEvent.SessionReconnected -> ControllerEvent.SessionReconnected
-                    active -> ControllerEvent.Reconcile
-                    else -> ControllerEvent.Elect
-                }
+                retryEvent = retryAfterFailure(event, pendingRetry = if (retryAtNanos != null) retryEvent else null, active = active)
                 retryAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(retryBackoffMs)
                 log.warn("b{}: controller event {} failed ({}); retrying with {} in {}ms", brokerId, event, e.toString(), retryEvent, retryBackoffMs)
             }
         }
         log.debug("b{}: controller event thread stopped", brokerId)
+    }
+
+    internal companion object {
+        /**
+         * The single retry to schedule after [failed] threw. A pending [ControllerEvent.SessionReconnected]
+         * retry is never downgraded: it re-registers the broker in its new session (and then elects),
+         * which a plain Elect/Reconcile would never do, so losing it would leave the broker unregistered.
+         */
+        fun retryAfterFailure(failed: ControllerEvent, pendingRetry: ControllerEvent?, active: Boolean): ControllerEvent = when {
+            failed == ControllerEvent.SessionReconnected || pendingRetry == ControllerEvent.SessionReconnected ->
+                ControllerEvent.SessionReconnected
+            active -> ControllerEvent.Reconcile
+            else -> ControllerEvent.Elect
+        }
     }
 
     private fun nextEvent(): ControllerEvent? {

@@ -91,15 +91,16 @@ private fun runServer(args: List<String>) {
         minInsyncReplicas = intFlag(args, "--min-insync", 1)
     )
     val server = Server(config)
+    // Graceful stop (algorithm 2) on SIGTERM / Ctrl-C: closing the ZooKeeper session removes the
+    // registration at once, so the controller fails over this broker's partitions immediately.
+    // Installed before start(): Server.stop() is idempotent and safe on a partially started server.
+    Runtime.getRuntime().addShutdownHook(Thread({ server.stop() }, "b$brokerId-shutdown"))
     try {
         server.start()
     } catch (e: Exception) {
         System.err.println("error starting broker $brokerId: ${e.message}")
         kotlin.system.exitProcess(1)
     }
-    // Graceful stop (algorithm 2) on SIGTERM / Ctrl-C: closing the ZooKeeper session removes the
-    // registration at once, so the controller fails over this broker's partitions immediately.
-    Runtime.getRuntime().addShutdownHook(Thread({ server.stop() }, "b$brokerId-shutdown"))
     println("minikafka server listening on port ${server.port()}, data dir ${dataDir.absolutePath}")
     Thread.currentThread().join()
 }

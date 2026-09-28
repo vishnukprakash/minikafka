@@ -93,7 +93,7 @@ class MiniKafkaClient(bootstrap: List<HostPort>, private val config: ClientConfi
         partition: Int? = null
     ): ProduceResponse {
         val p = partition ?: run {
-            val md = topicMetadata(topic) ?: return ProduceResponse(ErrorCodes.UNKNOWN_TOPIC, -1, -1L)
+            val md = topicMetadata(topic, retries = config.maxRetries) ?: return ProduceResponse(ErrorCodes.UNKNOWN_TOPIC, -1, -1L)
             partitioner.partition(topic, key, md.numPartitions)
         }
         return withLeader(topic, p, { ProduceResponse(it, p, -1L) }, { it.errorCode }) { conn ->
@@ -168,9 +168,12 @@ class MiniKafkaClient(bootstrap: List<HostPort>, private val config: ClientConfi
         return last!!.getOrThrow()
     }
 
-    /** Metadata of [topic]: from the cache, else (or if absent there) from a fresh METADATA; null = unknown topic. */
-    private fun topicMetadata(topic: String) =
-        cached?.topic(topic) ?: withAnyBroker(0) { fetchMetadata(it) }.topic(topic)
+    /**
+     * Metadata of [topic]: from the cache, else (or if absent there) from a fresh METADATA, trying
+     * every known broker up to 1 + [retries] times; null = unknown topic.
+     */
+    private fun topicMetadata(topic: String, retries: Int = 0) =
+        cached?.topic(topic) ?: withAnyBroker(retries) { fetchMetadata(it) }.topic(topic)
 
     private fun fetchMetadata(conn: Connection): MetadataResponse =
         conn.request(ApiKeys.METADATA, { MetadataRequest().encode(it) }) { MetadataResponse.decode(it) }

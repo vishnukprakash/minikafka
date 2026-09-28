@@ -164,6 +164,15 @@ class ReplicaManager(
         partitions.values.map { it.snapshot() }.sortedWith(compareBy({ it.tp.topic }, { it.tp.partition }))
     )
 
+    /**
+     * Step 1 of the graceful stop (algorithm 2): stops the threads that write to ZooKeeper or
+     * replicate (the isr-updater; Task 10 adds the fetchers) *before* the ZooKeeper client closes.
+     * Idempotent; [close] calls it too.
+     */
+    fun stopReplication() {
+        isrUpdater.close()
+    }
+
     override fun close() {
         synchronized(leaderAndIsrLock) { closed = true }
         isrUpdater.close()

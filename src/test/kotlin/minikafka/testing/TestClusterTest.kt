@@ -53,6 +53,25 @@ class TestClusterTest {
     }
 
     @Test
+    fun `a restarted broker gets the leadership of its partitions back`() {
+        val controller = cluster.awaitController()
+        val client = cluster.client()
+        client.createTopic("back", 3, replicationFactor = 1)
+        val victim = cluster.brokerIds.first { it != controller }
+        val p = (0 until 3).first { cluster.awaitLeader("back", it) == victim }
+        val epoch = cluster.partitionState("back", p)!!.value.leaderEpoch
+
+        cluster.stopBroker(victim)
+        eventually { assertEquals(-1, cluster.partitionState("back", p)!!.value.leader, "RF=1 partition goes offline") }
+        // The controller sees the new registration (and sends LeaderAndIsr) possibly before the
+        // restarted broker has recorded its own broker epoch: R8 retries until it is accepted.
+        cluster.restartBroker(victim)
+        assertEquals(victim, cluster.awaitLeader("back", p))
+        assertEquals(epoch + 2, cluster.partitionState("back", p)!!.value.leaderEpoch)
+        cluster.client().use { assertEquals(ErrorCodes.NONE, it.produce("back", null, "v".toByteArray(), partition = p).errorCode) }
+    }
+
+    @Test
     fun `stopping the controller removes its registration at once and another broker takes over`() {
         val first = cluster.awaitController()
         cluster.stopBroker(first)

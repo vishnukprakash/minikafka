@@ -52,6 +52,7 @@ class Server(val config: ServerConfig) {
     @Synchronized
     fun start() {
         check(!started) { "server already started" }
+        check(!stopped) { "server already stopped" }
         started = true
         try {
             dataDirLock = DataDirLock.acquire(config.dataDir, brokerId)
@@ -91,7 +92,7 @@ class Server(val config: ServerConfig) {
     fun snapshot(): BrokerSnapshot = replicaManager.snapshot()
 
     /**
-     * Algorithm 2: stop fetchers (Task 10) → stop the controller and close the ZooKeeper client
+     * Algorithm 2: stop fetchers and the isr-updater → stop the controller and close the ZooKeeper client
      * (the ephemeral registration disappears at once ⇒ fast failover) → close the listening socket
      * and every connection → close the logs → release the data dir. Idempotent.
      */
@@ -100,6 +101,7 @@ class Server(val config: ServerConfig) {
         if (stopped) return
         stopped = true
         running = false
+        replicas?.let { runCatching { it.stopReplication() } } // 1. isr-updater (+ fetchers, Task 10)
         controllerOrNull?.let { runCatching { it.close() } }
         zk?.let { runCatching { it.close() } }
         serverSocket?.let { runCatching { it.close() } }

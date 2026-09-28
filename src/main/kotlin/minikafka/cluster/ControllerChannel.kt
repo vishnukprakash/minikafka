@@ -60,6 +60,10 @@ class ControllerChannel(
 
     override fun close() = removeAll()
 
+    private companion object {
+        const val MAX_STALE_BACKOFF_MS = 1_000L
+    }
+
     private inner class Sender(val info: BrokerInfo, val brokerEpoch: Long) {
         val queue = LinkedBlockingQueue<LeaderAndIsrRequest>()
         @Volatile private var stopped = false
@@ -84,20 +88,40 @@ class ControllerChannel(
             }
         }
 
+        /**
+         * Sends [request] until the broker answers. I/O errors reconnect and retry. A
+         * STALE_BROKER_EPOCH answer is also retried (R8): our epoch comes from the broker's new
+         * registration, which the controller can see before that broker has recorded its own
+         * epoch (its registerBroker call has not returned yet). A genuinely stale sender is
+         * stopped by [removeBroker] when the controller sees the bounce, which ends the retries.
+         */
         private fun deliver(request: LeaderAndIsrRequest) {
+            var staleBackoffMs = retryBackoffMs
             while (!stopped) {
                 try {
                     val conn = connection ?: Connection(info.host, info.port, socketTimeoutMs).also { connection = it }
                     val response = conn.request(ApiKeys.LEADER_AND_ISR, { request.encode(it) }) { LeaderAndIsrResponse.decode(it) }
-                    if (response.errorCode == ErrorCodes.NONE) {
-                        log.debug("b{}: LeaderAndIsr ({} partitions, controller epoch {}) delivered to broker {}", myBrokerId, request.partitions.size, request.controllerEpoch, info.id)
-                    } else {
-                        log.info(
-                            "b{}: LeaderAndIsr (controller epoch {}, broker epoch {}) rejected by broker {} with error {}",
-                            myBrokerId, request.controllerEpoch, request.brokerEpoch, info.id, response.errorCode
-                        )
+                    when (response.errorCode) {
+                        ErrorCodes.NONE -> {
+                            log.debug("b{}: LeaderAndIsr ({} partitions, controller epoch {}) delivered to broker {}", myBrokerId, request.partitions.size, request.controllerEpoch, info.id)
+                            return
+                        }
+                        ErrorCodes.STALE_BROKER_EPOCH -> {
+                            log.info(
+                                "b{}: broker {} does not know broker epoch {} yet (STALE_BROKER_EPOCH); retrying in {}ms",
+                                myBrokerId, info.id, request.brokerEpoch, staleBackoffMs
+                            )
+                            Thread.sleep(staleBackoffMs)
+                            staleBackoffMs = minOf(staleBackoffMs * 2, MAX_STALE_BACKOFF_MS)
+                        }
+                        else -> {
+                            log.info(
+                                "b{}: LeaderAndIsr (controller epoch {}, broker epoch {}) rejected by broker {} with error {}",
+                                myBrokerId, request.controllerEpoch, request.brokerEpoch, info.id, response.errorCode
+                            )
+                            return
+                        }
                     }
-                    return
                 } catch (e: IOException) {
                     // The stream may be desynchronised: never reuse this connection.
                     closeConnection()
