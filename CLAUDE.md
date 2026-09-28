@@ -53,11 +53,11 @@ ruling in the 2026-09-28 plan's shared context).
 Dependency graph — never introduce an edge pointing the other way:
 
 ```
-cli     → server, client, model, proto (ErrorCodes), org.apache.zookeeper (the `zk` subcommand)
-server  → broker, cluster, zk, net, proto, model
+cli     → server, client, proto (ErrorCodes), org.apache.zookeeper (the `zk` subcommand)
+server  → broker, cluster, zk, proto, model
 cluster → zk, net, proto, model
 broker  → log, net, proto, model
-client  → net, proto, model
+client  → net, proto
 zk      → model, org.apache.curator / org.apache.zookeeper
 net     → proto
 proto, log → io          model → nothing   (proto and log never depend on each other)

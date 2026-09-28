@@ -41,9 +41,18 @@ pid_file() { echo "$PID_DIR/$1.pid"; }
 
 is_running() {
     local name=$1
-    local f
+    local f pid
     f=$(pid_file "$name")
-    [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null
+    [ -f "$f" ] || return 1
+    pid=$(cat "$f")
+    # Confirm the pid is still alive AND still a minikafka process before we trust it — a stale
+    # pid file (process died, pid later reused by something unrelated) must never cause us to
+    # signal a stranger process.
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q minikafka; then
+        return 0
+    fi
+    rm -f "$f"
+    return 1
 }
 
 pid_of() { cat "$(pid_file "$1")" 2>/dev/null || true; }

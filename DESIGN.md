@@ -52,22 +52,22 @@ Package dependency graph (strict, one-directional — never introduce an edge po
 way):
 
 ```
-cli     → server, client, model, proto (ErrorCodes), org.apache.zookeeper (the `zk` subcommand
-                                          runs an embedded ZooKeeperServerMain — see Cli.kt)
-server  → broker, cluster, zk, net, proto, model      (composition root: wires ReplicaManager,
-                                                        Controller, ZkStore/ZkIsrStore together)
-cluster → zk, net, proto, model                        (controller: election, reconciliation)
-broker  → log, net, proto, model                       (replica manager, partitions, fetchers;
-                                                        no dependency on zk — broker talks to ZK
-                                                        only through interfaces server implements)
-client  → net, proto, model
+cli     → server, client, proto (ErrorCodes), org.apache.zookeeper (the `zk` subcommand)
+server  → broker, cluster, zk, proto, model
+cluster → zk, net, proto, model
+broker  → log, net, proto, model
+client  → net, proto
 zk      → model, org.apache.curator / org.apache.zookeeper
 net     → proto
-proto, log → io                                        model → nothing
+proto, log → io          model → nothing   (proto and log never depend on each other)
 ```
 
-(`proto` and `log` still never depend on each other — both depend only on `io` for shared
-nullable-string/bytes encoding primitives.)
+(This exact edge list is re-derived from `grep -h '^import minikafka\.' src/main/kotlin/minikafka/<pkg>/*.kt`
+per package, and kept identical in `CLAUDE.md`.) `server`'s composition root wires `ReplicaManager`,
+`Controller`, and `ZkStore`/`ZkIsrStore` together; `cluster` is the controller (election,
+reconciliation); `broker` has no dependency on `zk` — it talks to ZK only through the `IsrWriter`/
+`BrokerResolver` interfaces `server` implements over `ZkStore`. `proto` and `log` still never depend
+on each other — both depend only on `io` for shared nullable-string/bytes encoding primitives.
 
 - **`minikafka.model`** — plain data types shared across layers with no behaviour of their own:
   `TopicPartition`, `PartitionState`, `BrokerInfo`, `Versioned` (a value plus a ZK `zkVersion`, used

@@ -133,10 +133,13 @@ The primary "user" is a developer (including future-me) who wants to:
 - **Simplicity first.** Prefer an obviously-correct, readable implementation over a performant or
   defensive one. No premature abstraction, no configuration surface beyond what's described here
   and in the ADR.
-- **Minimal third-party dependencies.** Apache Curator + embedded ZooKeeper server (for
-  coordination) and slf4j (logging) are the only runtime dependencies — the wire protocol, log, and
-  network layers remain hand-rolled JDK standard library (`java.io`, `java.net`) code, so the point
-  of seeing how little you need to build the storage/protocol layers still stands.
+- **Minimal third-party dependencies.** Apache Curator + an embedded ZooKeeper server (for
+  coordination) and slf4j (logging) are the direct dependencies; ZooKeeper itself pulls in
+  `metrics-core` and `snappy-java` at runtime (`build.gradle.kts`'s `runtimeOnly` deps — ZooKeeper
+  3.9's snapshot writer loads `SnappyOutputStream` even when snapshots aren't compressed). The wire
+  protocol, log, and network layers remain hand-rolled JDK standard library (`java.io`,
+  `java.net`) code, so the point of seeing how little you need to build the storage/protocol layers
+  still stands — the dependency surface is ZooKeeper's, not minikafka's own.
 - **Multi-broker, multi-JVM cluster**, coordinated through ZooKeeper as the single consistent core;
   no peer-to-peer gossip or distributed consensus implemented by minikafka itself. Multiple
   concurrent client connections per broker must be safely supported.
