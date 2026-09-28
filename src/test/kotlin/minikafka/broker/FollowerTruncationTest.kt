@@ -224,6 +224,13 @@ class FollowerTruncationTest {
         assertEquals(4L, follower.logEndOffset())
     }
 
+    @Test
+    fun `a leader answering a negative end offset is rejected without truncating`() {
+        val follower = logOf("follower", 0 to 2)
+        assertThrows<IllegalStateException> { truncateForLeaderEpoch(follower, { 0 to -5L }) }
+        assertEquals(2L, follower.logEndOffset())
+    }
+
     // ---- through ReplicaManager (locking and fencing around the pure unit) ----
 
     @Test

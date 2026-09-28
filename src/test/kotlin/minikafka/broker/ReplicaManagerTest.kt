@@ -409,6 +409,80 @@ class ReplicaManagerTest {
         }
     }
 
+    @Test
+    fun `a caught-up follower is written into the ISR by the background updater without waiting for the interval`() {
+        val store = FakeIsrStore()
+        val tp = TopicPartition("t", 0)
+        // Interval = lag / 2 = 300 s: only requestRun() can make the thread act within the test.
+        ReplicaManager(BrokerConfig(1, "localhost", 0, dir, 1, replicaLagTimeMaxMs = 600_000), store, minikafka.testing.MutableClock()).use { rm ->
+            val v = store.controllerSet(tp, PartitionState(1, 0, listOf(1), 1))
+            rm.applyLeaderAndIsr(LeaderAndIsrRequest(0, 1, 100L, listOf(LeaderAndIsrPartition("t", 0, 1, 0, listOf(1), listOf(1, 2), v))), 100L)
+            rm.produce(tp, null, "a".toByteArray(), ACKS_ONE, 1_000)
+            rm.fetchAsFollower(tp, 2, 1, 0, 1 shl 20)
+            minikafka.testing.eventually { assertEquals(listOf(1, 2), store.states[tp]!!.value.isr) }
+        }
+    }
+
+    @Test
+    fun `close stops an idle isr-updater thread promptly`() {
+        val rm = ReplicaManager(BrokerConfig(8, "localhost", 0, dir, 1, replicaLagTimeMaxMs = 600_000), FakeIsrStore(), minikafka.testing.MutableClock())
+        fun updater() = Thread.getAllStackTraces().keys.filter { it.name == "b8-isr-updater" && it.isAlive }
+        minikafka.testing.eventually { assertEquals(Thread.State.TIMED_WAITING, updater().single().state) }
+        val start = System.nanoTime()
+        rm.close()
+        assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2), "close waits for the 300 s interval")
+        assertTrue(updater().isEmpty())
+    }
+
+    @Test
+    fun `a state znode missing at the controller-epoch pre-read marks the partition stale`() {
+        ReplicaHarness(dir).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))
+            h.store.states.remove(h.tp)
+            h.clock.advance(h.lagMs + 1)
+            h.runIsrUpdater()
+            val s = h.state()
+            assertTrue(s.isrStale)
+            assertEquals(listOf(1, 2), s.committedIsr)
+            assertEquals(0, s.zkVersion)
+            assertTrue(h.store.writes.isEmpty(), "no CAS without knowing the znode's controller_epoch")
+        }
+    }
+
+    /**
+     * The controller re-elected this same broker in a newer leader epoch while our ISR CAS of the
+     * old epoch was in flight: the conflicting znode names us as leader, but it is not our
+     * leadership. Adopting its zkVersion would let the next CAS write the old leader_epoch back
+     * over the newer one (a leader-epoch regression in ZooKeeper).
+     */
+    @Test
+    fun `ISR CAS conflict with our own leadership in a newer leader epoch marks the partition stale`() {
+        for (storedIsr in listOf(listOf(1), listOf(1, 2))) { // equal to the proposal / covered by maximal ISR
+            ReplicaHarness(File(dir, "isr-${storedIsr.size}")).use { h ->
+                h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))
+                h.store.onWrite = { tp, state, _ ->
+                    h.store.states[tp] = Versioned(state.copy(leaderEpoch = 1, isr = storedIsr), 9)
+                    null
+                }
+                h.clock.advance(h.lagMs + 1)
+                h.runIsrUpdater()
+                val s = h.state()
+                assertTrue(s.isrStale, "stored isr $storedIsr")
+                assertEquals(0, s.zkVersion, "stored isr $storedIsr: the newer epoch's zkVersion is not adopted")
+                assertEquals(listOf(1, 2), s.committedIsr)
+                assertEquals(listOf(1, 2), s.maximalIsr)
+
+                h.store.writes.clear()
+                h.runIsrUpdater()
+                assertTrue(h.store.writes.isEmpty(), "no further ISR write in the old epoch")
+
+                h.store.onWrite = null
+                h.leaderAndIsr(1, 1, listOf(1, 2), listOf(1, 2))
+                assertFalse(h.state().isrStale)
+            }
+        }
+    }
+
     // ---- OffsetsForLeaderEpoch ----
 
     @Test
@@ -501,6 +575,59 @@ class ReplicaManagerTest {
         h.close()
         assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, pending.get(5, TimeUnit.SECONDS).errorCode)
         assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.produce("b").errorCode)
+    }
+
+    @Test
+    fun `LeaderAndIsr after close opens no partition`() {
+        val h = ReplicaHarness(dir)
+        h.close()
+        assertEquals(ErrorCodes.NONE, h.leaderAndIsr(1, 0, listOf(1), listOf(1)))
+        assertTrue(h.rm.snapshot().partitions.isEmpty())
+        assertFalse(File(dir, "t-0").exists())
+    }
+
+    @Test
+    fun `every entry point answers NOT_LEADER for a partition that is not open here`() {
+        ReplicaHarness(dir).use { h ->
+            val tp = TopicPartition("nope", 0)
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.produce(tp, null, byteArrayOf(), ACKS_ONE, 100).errorCode)
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.fetchAsConsumer(tp, 0, 100).errorCode)
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.fetchAsFollower(tp, 2, 0, 0, 100).errorCode)
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.offsetsForLeaderEpoch(tp, 2, 0, 0).errorCode)
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.appendAsFollower(tp, 0, emptyList(), 0L))
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.truncateTo(tp, 0, 0L))
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.truncateFollower(tp, 0) { 0 to 0L }.errorCode)
+            assertNull(h.rm.logEndOffset(tp))
+        }
+    }
+
+    @Test
+    fun `truncateTo on the leader, even with its own epoch, is NOT_LEADER and keeps the log`() {
+        ReplicaHarness(dir).use { h ->
+            h.leaderAndIsr(1, 0, listOf(1), listOf(1, 2))
+            h.produce("a"); h.produce("b")
+            assertEquals(ErrorCodes.NOT_LEADER_FOR_PARTITION, h.rm.truncateTo(h.tp, 0, 0L))
+            assertEquals(2L, h.state().logEndOffset)
+        }
+    }
+
+    /** The partition lock is reentrant, so only another thread can tell whether it was released. */
+    @Test
+    fun `partition operations release the partition lock`() {
+        ReplicaHarness(dir).use { h ->
+            fun leoFromAnotherThread() = async { h.state().logEndOffset }.get(2, TimeUnit.SECONDS)
+            h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))
+            h.produce("a")
+            h.rm.offsetsForLeaderEpoch(h.tp, 2, 0, 0)
+            assertEquals(1L, leoFromAnotherThread())
+            h.leaderAndIsr(2, 1, listOf(1, 2), listOf(1, 2))
+            h.rm.appendAsFollower(h.tp, 1, listOf(Record(1, 1, 0, null, "b".toByteArray())), 0)
+            assertEquals(2L, leoFromAnotherThread())
+            h.rm.truncateFollower(h.tp, 1) { 1 to 1L }
+            assertEquals(1L, leoFromAnotherThread())
+            h.rm.truncateTo(h.tp, 1, 0L)
+            assertEquals(0L, leoFromAnotherThread())
+        }
     }
 
     // ---- concurrency stress ----
