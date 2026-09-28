@@ -60,12 +60,10 @@ val e2eTest = tasks.register<Test>("e2eTest") {
     useJUnitPlatform {
         includeTags("e2e", "slow")
     }
-    // No e2e/slow tests exist yet (Task 1); Gradle 9's default fails a Test task that
-    // discovers zero tests, so relax that here until later tasks add e2e/slow tests.
-    failOnNoDiscoveredTests = false
-
     maxParallelForks = 1
     dependsOn(tasks.named("installDist"))
+    // The nemesis seed is printed by NemesisE2eTest; replay a run with ./gradlew e2eTest -Dnemesis.seed=<seed>.
+    providers.systemProperty("nemesis.seed").orNull?.let { systemProperty("nemesis.seed", it) }
     systemProperty(
         "minikafka.home",
         layout.buildDirectory.dir("install/minikafka").get().asFile.absolutePath

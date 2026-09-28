@@ -143,7 +143,8 @@ class TestCluster(
 
     // ------------------------------------------------------------------ clients & ZooKeeper views
 
-    fun bootstrap(): List<HostPort> = runningBrokers().map { HostPort("127.0.0.1", broker(it).port()) }
+    /** The running brokers' addresses; safe to call while other threads stop/start brokers. */
+    fun bootstrap(): List<HostPort> = servers.entries.sortedBy { it.key }.map { HostPort("127.0.0.1", it.value.port()) }
 
     fun clientConfig(): ClientConfig = ClientConfig(socketTimeoutMs = clientSocketTimeoutMs, produceTimeoutMs = produceTimeoutMs)
 
