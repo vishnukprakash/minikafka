@@ -11,12 +11,17 @@ import java.util.concurrent.TimeUnit
  * session deletes its ephemerals atomically; the victim's own client later reconnects, is told
  * its session is expired, and (Curator) starts a brand-new session.
  *
+ * If the session is already expired (the victim has not noticed yet, e.g. right after an earlier
+ * expiry or isolation), the attach is answered with `Expired`: the goal is met, so that returns
+ * normally too.
+ *
  * [connectString] must be the bare `host:port` list (no chroot).
  */
 fun expireZkSession(connectString: String, sessionId: Long, password: ByteArray, timeoutMs: Long = 10_000) {
     val connected = CountDownLatch(1)
     val zk = ZooKeeper(connectString, 30_000, { event ->
-        if (event.state == Watcher.Event.KeeperState.SyncConnected) connected.countDown()
+        val state = event.state
+        if (state == Watcher.Event.KeeperState.SyncConnected || state == Watcher.Event.KeeperState.Expired) connected.countDown()
     }, sessionId, password)
     try {
         check(connected.await(timeoutMs, TimeUnit.MILLISECONDS)) {

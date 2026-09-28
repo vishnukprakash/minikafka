@@ -52,6 +52,9 @@ class NemesisE2eTest {
 
         var maxControllerEpoch = cluster.controllerEpoch()
         val maxLeaderEpoch = partitions.associateWith { cluster.state(topic, it).leaderEpoch }.toMutableMap()
+        val initialControllerEpoch = maxControllerEpoch
+        val initialLeaderEpochs = maxLeaderEpoch.toMap()
+        val acksBeforeFaults = workload.ackCount()
         val monotonic = {
             val ce = cluster.controllerEpoch()
             assertTrue(ce >= maxControllerEpoch) { context() + "controller epoch went back: $ce < $maxControllerEpoch" }
@@ -88,6 +91,11 @@ class NemesisE2eTest {
             // it, with the full replica set back in the ISR (so the next fault is again a single one).
             eventually(40.seconds) {
                 monotonic()
+                // Every broker registered under its current session (so the next EXPIRE targets a live session).
+                val live = cluster.admin().liveBrokers()
+                for (id in cluster.brokerIds) {
+                    assertEquals(cluster.broker(id).brokerEpoch, live[id]?.second, context() + "broker $id not registered under its current session")
+                }
                 for (p in partitions) {
                     cluster.awaitLeader(topic, p, timeout = kotlin.time.Duration.ZERO)
                     assertEquals(cluster.replicasOf(topic, p).toSet(), cluster.state(topic, p).isr.toSet(), context() + "ISR of $topic-$p not restored")
@@ -95,6 +103,17 @@ class NemesisE2eTest {
             }
             ops[ops.lastIndex] += " -> recovered at t=${elapsed()}ms"
         }
+        val acksDuringFaults = workload.ackCount() - acksBeforeFaults
+        // The fault phase must have exercised something: enough faults, progress under them, and
+        // at least one leadership or controller change.
+        assertTrue(ops.size >= 5, context() + "only ${ops.size} faults injected")
+        assertTrue(acksDuringFaults >= 100, context() + "only $acksDuringFaults acks during the fault phase")
+        val finalLeaderEpochs = partitions.associateWith { cluster.state(topic, it).leaderEpoch }
+        assertTrue(cluster.controllerEpoch() > initialControllerEpoch || finalLeaderEpochs != initialLeaderEpochs) {
+            context() + "no controller or leader change: controller epoch $initialControllerEpoch, leader epochs $initialLeaderEpochs -> $finalLeaderEpochs"
+        }
+        println("faults ${ops.size}, acks during faults $acksDuringFaults, controller epoch $initialControllerEpoch -> ${cluster.controllerEpoch()}, " +
+            "leader epochs $initialLeaderEpochs -> $finalLeaderEpochs")
         workload.awaitAcks(10, on = partitions)
         println(context())
         cluster.stopAndCheck(workload, topic, context())

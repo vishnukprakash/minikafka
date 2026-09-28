@@ -5,6 +5,7 @@ import minikafka.model.TopicPartition
 import minikafka.proto.ErrorCodes
 import minikafka.testing.TestCluster
 import minikafka.testing.TestClusterExtension
+import minikafka.testing.alwaysFor
 import minikafka.testing.eventually
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -51,6 +53,12 @@ class DivergenceE2eTest {
 
         // B stops fetching; A (still with ISR {A, B}) takes acks=1 writes only it holds.
         cluster.pauseFetchers(b)
+        // A FETCH already in flight when the pause took effect could still copy the next record:
+        // wait until the leader sees no more follower fetches for a while.
+        eventually(10.seconds) {
+            val seen = cluster.broker(a).snapshot().followerFetchRequests
+            alwaysFor(200.milliseconds) { assertEquals(seen, cluster.broker(a).snapshot().followerFetchRequests, "B still fetching") }
+        }
         repeat(3) {
             val r = client.produce("div", null, "uncommitted-$it".toByteArray(), acks = MiniKafkaClient.ACKS_LEADER, partition = 0)
             assertEquals(ErrorCodes.NONE, r.errorCode)

@@ -63,15 +63,19 @@ class CliClusterE2eTest {
 
     @Test
     fun `a 3-process cluster survives a SIGKILL of the leader and consume returns everything produced`() {
+        // If the test JVM dies (timeout, kill), the broker subprocesses must not outlive it.
+        val reaper = Thread({ brokers.values.forEach { it.destroyForcibly() } }, "cli-e2e-reaper")
+        Runtime.getRuntime().addShutdownHook(reaper)
         val zk = EmbeddedZk()
-        val admin = ZkStore(zk.connectString + "/cli", 10_000)
+        var admin: ZkStore? = null
         try {
             val zkConnect = zk.connectString + "/cli"
             val ports = (1..3).associateWith { startBroker(it, zkConnect) }
-            admin.start()
+            val store = ZkStore(zkConnect, 10_000).also { admin = it }
+            store.start()
             eventually(30.seconds) {
-                assertEquals(setOf(1, 2, 3), admin.liveBrokers().keys)
-                assertTrue(admin.currentController() != null)
+                assertEquals(setOf(1, 2, 3), store.liveBrokers().keys)
+                assertTrue(store.currentController() != null)
             }
             val all = ports.values.joinToString(",") { "127.0.0.1:$it" }
 
@@ -80,7 +84,7 @@ class CliClusterE2eTest {
             assertTrue("created topic demo" in created.out, created.out)
             val tp = TopicPartition("demo", 0)
             eventually(30.seconds) {
-                val s = checkNotNull(admin.readPartitionState(tp)) { "no state yet" }.value
+                val s = checkNotNull(store.readPartitionState(tp)) { "no state yet" }.value
                 assertTrue(s.leader > 0 && s.isr.toSet() == setOf(1, 2, 3)) { "not fully in sync yet: $s" }
             }
 
@@ -95,13 +99,13 @@ class CliClusterE2eTest {
             }
             (0 until 4).forEach { produce("before-$it", all) }
 
-            val leader = admin.readPartitionState(tp)!!.value.leader
+            val leader = store.readPartitionState(tp)!!.value.leader
             val killed = brokers.getValue(leader)
             val killedAt = System.nanoTime()
             killed.destroyForcibly() // SIGKILL: no shutdown hook, the ZooKeeper session must expire
             assertTrue(killed.waitFor(30, TimeUnit.SECONDS))
             eventually(30.seconds) {
-                val s = admin.readPartitionState(tp)!!.value
+                val s = store.readPartitionState(tp)!!.value
                 assertTrue(s.leader > 0 && s.leader != leader) { "leader not moved off the killed $leader yet: $s" }
             }
             println("SIGKILLed leader $leader; new leader elected after ${(System.nanoTime() - killedAt) / 1_000_000}ms")
@@ -111,6 +115,10 @@ class CliClusterE2eTest {
             val described = cli("topics", "describe", "--topic", "demo", "--bootstrap", survivors)
             assertEquals(0, described.exit, described.err)
             println(described.out)
+            val line = described.out.lines().single { it.startsWith("demo\tpartition 0\t") }
+            val isr = line.substringAfter("\tisr ").substringBefore('\t').split(',').map { it.trim().toInt() }
+            assertTrue(leader !in isr, "the killed broker $leader left the ISR: $line")
+            assertTrue(line.contains("UNDER-REPLICATED"), line)
 
             eventually(30.seconds) {
                 val consumed = cli("consume", "--topic", "demo", "--partition", "0", "--from-beginning", "--bootstrap", survivors)
@@ -129,7 +137,8 @@ class CliClusterE2eTest {
         } finally {
             brokers.values.forEach { it.destroyForcibly() }
             brokers.values.forEach { it.waitFor(10, TimeUnit.SECONDS) }
-            runCatching { admin.close() }
+            runCatching { admin?.close() }
+            runCatching { Runtime.getRuntime().removeShutdownHook(reaper) }
             runCatching { zk.close() }
             work.deleteRecursively()
         }

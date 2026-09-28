@@ -22,14 +22,13 @@ dependencies {
     implementation("org.apache.curator:curator-framework:5.9.0")
     implementation("org.slf4j:slf4j-api:2.0.16")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
-    // `minikafka zk` runs ZooKeeperServerMain, which needs these at runtime (same versions
-    // curator-test brings for TestingServer): metrics-core for ServerMetrics, and snappy-java
+    // `minikafka zk` (and the tests' EmbeddedZk) run a ZooKeeper server, which needs these at
+    // runtime (the versions curator-test used to bring for TestingServer): metrics-core for ServerMetrics, and snappy-java
     // because ZooKeeper 3.9's SnapStream loads SnappyOutputStream even with the default
     // (uncompressed) snapshot format — without it the server thread dies with NoClassDefFoundError.
     runtimeOnly("io.dropwizard.metrics:metrics-core:3.2.5")
     runtimeOnly("org.xerial.snappy:snappy-java:1.1.10.4")
 
-    testImplementation("org.apache.curator:curator-test:5.9.0")
 }
 
 application {
@@ -61,6 +60,8 @@ val e2eTest = tasks.register<Test>("e2eTest") {
         includeTags("e2e", "slow")
     }
     maxParallelForks = 1
+    // Never up to date: every run is a fresh run (a new nemesis seed, fresh failure timing).
+    outputs.upToDateWhen { false }
     dependsOn(tasks.named("installDist"))
     // The nemesis seed is printed by NemesisE2eTest; replay a run with ./gradlew e2eTest -Dnemesis.seed=<seed>.
     providers.systemProperty("nemesis.seed").orNull?.let { systemProperty("nemesis.seed", it) }

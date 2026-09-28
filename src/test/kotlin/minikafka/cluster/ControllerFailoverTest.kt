@@ -387,10 +387,13 @@ class ControllerFailoverTest {
                 release.await()
             }
         }
-        cluster.stopBroker(victim)
-        assertTrue(held.await(10, TimeUnit.SECONDS))
-        cluster.startBroker(victim)
-        release.countDown()
+        try {
+            cluster.stopBroker(victim)
+            assertTrue(held.await(10, TimeUnit.SECONDS))
+            cluster.startBroker(victim)
+        } finally {
+            release.countDown() // never leave the controller's event thread parked
+        }
 
         assertEquals(victim, cluster.awaitLeader("solo", p))
         val after = cluster.partitionState("solo", p)!!.value

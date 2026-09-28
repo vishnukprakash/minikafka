@@ -143,10 +143,22 @@ class ClusterOperationsE2eTest {
         workload.awaitAcks(20, on = partitions)
         val reader = cluster.client().also { it.metadata() } // routes from cached metadata during the outage
 
+        val roles = cluster.runningBrokers().associateWith { id ->
+            cluster.broker(id).snapshot().partitions.filter { it.tp.topic == "zk" }.associate { it.tp.partition to it.role }
+        }
         cluster.zk.stop()
         // Longer than the 3s session timeout: every broker's Curator declares the session LOST, the
         // controller resigns, but roles stay (D17) and the ISR needs no change, so acks=all commits.
         workload.awaitAcks(30, on = partitions, timeout = 20.seconds)
+        eventually(15.seconds) {
+            assertTrue(cluster.runningBrokers().none { cluster.broker(it).isController() }, "controller resigned on session LOST")
+        }
+        // From here on every session is lost: serving must continue with the roles unchanged.
+        for ((id, before) in roles) {
+            val now = cluster.broker(id).snapshot().partitions.filter { it.tp.topic == "zk" }.associate { it.tp.partition to it.role }
+            assertEquals(before, now, "broker $id keeps its roles after session loss (D17)")
+        }
+        workload.awaitAcks(10, on = partitions, timeout = 20.seconds)
         alwaysFor(3500.milliseconds) {
             for (p in partitions) {
                 val r = reader.fetch("zk", p, 0)
