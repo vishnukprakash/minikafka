@@ -122,6 +122,45 @@ class ReplicaManagerTest {
     }
 
     @Test
+    fun `a partition whose log fails to open is skipped without blocking the others and is retried later`() {
+        ReplicaHarness(dir).use { h ->
+            val events = CopyOnWriteArrayList<String>()
+            h.rm.roleListener = object : ReplicaRoleListener {
+                override fun onBecomeLeader(tp: TopicPartition, leaderEpoch: Int) {
+                    events.add("leader:$tp:$leaderEpoch")
+                }
+
+                override fun onBecomeFollower(tp: TopicPartition, leader: Int, leaderEpoch: Int) {
+                    events.add("follower:$tp:$leader:$leaderEpoch")
+                }
+            }
+            val tps = (0..2).map { TopicPartition("t", it) }
+            val obstruction = File(dir, "t-1").apply { writeText("not a directory") }
+            fun request(): LeaderAndIsrRequest {
+                val parts = tps.map { tp ->
+                    val v = h.store.controllerSet(tp, PartitionState(2, 3, listOf(1, 2), h.controllerEpoch))
+                    h.partitionRequest(2, 3, listOf(1, 2), listOf(1, 2), v, tp)
+                }
+                return LeaderAndIsrRequest(0, h.controllerEpoch, h.brokerEpoch, parts)
+            }
+
+            assertEquals(ErrorCodes.NONE, h.rm.applyLeaderAndIsr(request(), h.brokerEpoch))
+            assertEquals(listOf("follower:t-0:2:3", "follower:t-2:2:3"), events,
+                "partitions before and after the failed one get their role transition")
+            assertEquals(listOf(tps[0], tps[2]), h.rm.snapshot().partitions.map { it.tp })
+
+            // The controller channel retries the same request after the obstruction is gone:
+            // t-1's epoch was never advanced, so only t-1 transitions now.
+            events.clear()
+            assertTrue(obstruction.delete())
+            assertEquals(ErrorCodes.NONE, h.rm.applyLeaderAndIsr(request(), h.brokerEpoch))
+            assertEquals(listOf("follower:t-1:2:3"), events)
+            assertEquals(3, h.state(tps[1]).leaderEpoch)
+            assertTrue(File(dir, "t-1").isDirectory)
+        }
+    }
+
+    @Test
     fun `becoming leader resets follower LEOs to unknown`() {
         ReplicaHarness(dir).use { h ->
             h.leaderAndIsr(1, 0, listOf(1, 2), listOf(1, 2))

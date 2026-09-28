@@ -78,7 +78,16 @@ class ReplicaManager(
         if (startIsrUpdater) isrUpdater.start()
     }
 
-    /** Algorithm 7. Returns the request-level error code. */
+    /**
+     * Algorithm 7. Returns the request-level error code.
+     *
+     * Per-partition failures are isolated: if a partition's log cannot be opened (or applying the
+     * state throws), it is logged at WARN and skipped *without advancing its leader epoch*, so a
+     * retry of the same request — or any later LeaderAndIsr — re-attempts it. The request still
+     * answers NONE, and the role listener is always told about every transition that did apply
+     * (dispatched in `finally`), so one bad partition never leaves the others without fetchers
+     * for their new epoch or head-of-line blocks the controller channel.
+     */
     fun applyLeaderAndIsr(req: LeaderAndIsrRequest, myBrokerEpoch: Long): Short = synchronized(leaderAndIsrLock) {
         if (closed) return ErrorCodes.NONE
         if (req.brokerEpoch != myBrokerEpoch) {
@@ -91,23 +100,30 @@ class ReplicaManager(
         }
         seenControllerEpoch = req.controllerEpoch
         val transitions = mutableListOf<Partition.RoleTransition>()
-        for (p in req.partitions) {
-            val tp = TopicPartition(p.topic, p.partition)
-            if (brokerId !in p.replicas) {
-                logger.info("b{} {}: LeaderAndIsr skipped: not in replicas {}", brokerId, tp, p.replicas)
-                continue
+        try {
+            for (p in req.partitions) {
+                val tp = TopicPartition(p.topic, p.partition)
+                if (brokerId !in p.replicas) {
+                    logger.info("b{} {}: LeaderAndIsr skipped: not in replicas {}", brokerId, tp, p.replicas)
+                    continue
+                }
+                try {
+                    val partition = partitions.computeIfAbsent(tp, ::openPartition)
+                    partition.applyLeaderAndIsr(p)?.let(transitions::add)
+                } catch (e: Exception) {
+                    logger.warn("b{} {}: LeaderAndIsr (leader={}, epoch={}) failed to apply; skipped, will retry on a later LeaderAndIsr", brokerId, tp, p.leader, p.leaderEpoch, e)
+                }
             }
-            val partition = partitions.computeIfAbsent(tp, ::openPartition)
-            partition.applyLeaderAndIsr(p)?.let(transitions::add)
-        }
-        // Every partition lock is released here; now (re)wire fetchers.
-        val listener = roleListener
-        for (t in transitions) {
-            try {
-                if (t.isLeader) listener.onBecomeLeader(t.tp, t.leaderEpoch)
-                else listener.onBecomeFollower(t.tp, t.leader, t.leaderEpoch)
-            } catch (e: Exception) {
-                logger.warn("b{} {}: role listener failed", brokerId, t.tp, e)
+        } finally {
+            // Every partition lock is released here; now (re)wire fetchers.
+            val listener = roleListener
+            for (t in transitions) {
+                try {
+                    if (t.isLeader) listener.onBecomeLeader(t.tp, t.leaderEpoch)
+                    else listener.onBecomeFollower(t.tp, t.leader, t.leaderEpoch)
+                } catch (e: Exception) {
+                    logger.warn("b{} {}: role listener failed", brokerId, t.tp, e)
+                }
             }
         }
         ErrorCodes.NONE
