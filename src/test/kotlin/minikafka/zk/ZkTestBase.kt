@@ -1,8 +1,7 @@
 package minikafka.zk
 
+import minikafka.testing.EmbeddedZk
 import minikafka.testing.expireZkSession
-import org.apache.curator.test.InstanceSpec
-import org.apache.curator.test.TestingServer
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -11,12 +10,12 @@ import org.junit.jupiter.api.TestInstance
 import java.util.UUID
 
 /**
- * One in-process ZooKeeper per test class (tickTime 200ms so sessions can be short), and a
+ * One in-process [EmbeddedZk] per test class (tickTime 200ms so sessions can be short), and a
  * fresh chroot namespace per test so tests never see each other's znodes.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 abstract class ZkTestBase {
-    protected lateinit var server: TestingServer
+    protected lateinit var server: EmbeddedZk
     private val stores = mutableListOf<ZkStore>()
 
     /** `host:port/t<uuid>` — unique per test. */
@@ -24,7 +23,7 @@ abstract class ZkTestBase {
 
     @BeforeAll
     fun startServer() {
-        server = TestingServer(InstanceSpec(null, -1, -1, -1, true, -1, 200, -1), true)
+        server = EmbeddedZk()
     }
 
     @AfterAll

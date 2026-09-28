@@ -38,10 +38,29 @@ class TestCluster(
     val produceTimeoutMs: Int = 5_000,
     val clientSocketTimeoutMs: Int = 10_000
 ) : AutoCloseable {
-    val zk = EmbeddedZk()
+    val zk: EmbeddedZk
     private val chroot = "/c" + UUID.randomUUID().toString().replace("-", "").take(12)
-    private val root: File = Files.createTempDirectory("minikafka-cluster").toFile()
-    private val proxies: Map<Int, TcpProxy> = (1..size).associateWith { TcpProxy("127.0.0.1", zk.port, "zk-proxy-b$it") }
+    private val root: File
+    private val proxies: Map<Int, TcpProxy>
+
+    init {
+        // Built by hand so that a failure half-way (e.g. a proxy cannot bind) releases what exists.
+        val server = EmbeddedZk()
+        val made = LinkedHashMap<Int, TcpProxy>()
+        var dir: File? = null
+        try {
+            dir = Files.createTempDirectory("minikafka-cluster").toFile()
+            for (id in 1..size) made[id] = TcpProxy("127.0.0.1", server.port, "zk-proxy-b$id")
+        } catch (e: Throwable) {
+            made.values.forEach { runCatching { it.close() } }
+            runCatching { server.close() }
+            dir?.deleteRecursively()
+            throw e
+        }
+        zk = server
+        root = checkNotNull(dir)
+        proxies = made
+    }
     private val servers = ConcurrentHashMap<Int, Server>()
     private val clients = CopyOnWriteArrayList<MiniKafkaClient>()
     private var adminStore: ZkStore? = null
