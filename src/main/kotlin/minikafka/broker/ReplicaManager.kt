@@ -132,6 +132,21 @@ class ReplicaManager(
     fun truncateTo(tp: TopicPartition, expectedLeaderEpoch: Int, offset: Long): Short =
         partitions[tp]?.truncateTo(expectedLeaderEpoch, offset) ?: ErrorCodes.NOT_LEADER_FOR_PARTITION
 
+    /**
+     * Algorithm 8's leader-epoch handshake for a follower replica (Task 10's fetcher, before its
+     * first FETCH of [expectedLeaderEpoch]): see [truncateForLeaderEpoch]. [queryLeader] sends
+     * OFFSETS_FOR_LEADER_EPOCH to the leader and returns (leaderEpoch, endOffset); it runs with no
+     * lock held and may throw (propagated). NOT_LEADER / FENCED_LEADER_EPOCH if this replica is no
+     * longer a follower in [expectedLeaderEpoch].
+     */
+    fun truncateFollower(
+        tp: TopicPartition,
+        expectedLeaderEpoch: Int,
+        queryLeader: (requestedEpoch: Int) -> Pair<Int, Long>
+    ): FollowerTruncationOutcome =
+        partitions[tp]?.truncateAsFollower(expectedLeaderEpoch, queryLeader)
+            ?: FollowerTruncationOutcome(ErrorCodes.NOT_LEADER_FOR_PARTITION, null)
+
     /** Test hook (ruling R2): Task 10's fetchers consult it; no-op until fetchers exist. */
     internal fun pauseFetchers(paused: Boolean) {
         fetchersPaused = paused

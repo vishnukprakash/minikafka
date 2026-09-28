@@ -250,6 +250,47 @@ class Partition internal constructor(
         ErrorCodes.NONE
     }
 
+    /**
+     * Algorithm 8's handshake for this follower replica ([truncateForLeaderEpoch]). The partition
+     * lock is held only for the initial role/epoch check and around each truncation (which
+     * re-checks that we are still a follower in [expectedLeaderEpoch]); never while [queryLeader]
+     * runs. Returns FENCED_LEADER_EPOCH / NOT_LEADER_FOR_PARTITION (log untouched from that point)
+     * if the role or epoch moved on. Exceptions from [queryLeader] propagate.
+     */
+    internal fun truncateAsFollower(
+        expectedLeaderEpoch: Int,
+        queryLeader: (requestedEpoch: Int) -> Pair<Int, Long>
+    ): FollowerTruncationOutcome {
+        lock.withLock { followerCheckLocked(expectedLeaderEpoch)?.let { return FollowerTruncationOutcome(it, null) } }
+        val result = try {
+            truncateForLeaderEpoch(log, queryLeader, truncate = { offset ->
+                lock.withLock {
+                    followerCheckLocked(expectedLeaderEpoch)?.let { throw FencedTruncation(it) }
+                    log.truncateTo(offset)
+                    highWatermark = minOf(highWatermark, log.logEndOffset())
+                }
+            })
+        } catch (e: FencedTruncation) {
+            logger.info("b{} {}: truncation for epoch {} abandoned: role/epoch changed", brokerId, tp, expectedLeaderEpoch)
+            return FollowerTruncationOutcome(e.code, null)
+        }
+        if (result.truncated) {
+            logger.info(
+                "b{} {}: truncated {} -> {} (leader epoch {}, final log epoch {}, {} round(s))",
+                brokerId, tp, result.fromOffset, result.toOffset, expectedLeaderEpoch, result.finalEpoch, result.rounds
+            )
+        }
+        return FollowerTruncationOutcome(ErrorCodes.NONE, result)
+    }
+
+    private fun followerCheckLocked(expectedLeaderEpoch: Int): Short? = when {
+        closed || role != Role.FOLLOWER -> ErrorCodes.NOT_LEADER_FOR_PARTITION
+        expectedLeaderEpoch != leaderEpoch -> ErrorCodes.FENCED_LEADER_EPOCH
+        else -> null
+    }
+
+    private class FencedTruncation(val code: Short) : RuntimeException(null, null, false, false)
+
     // ---- algorithm 10 (the parts under the lock) ----
 
     /**
