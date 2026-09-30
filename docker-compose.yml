@@ -1,0 +1,86 @@
+# minikafka cluster: one ZooKeeper + three brokers (RF 3, min.insync.replicas 2).
+#
+#   docker compose up -d --build --wait        # build the image and start zookeeper + brokers
+#   docker compose run --rm cli topics create --topic demo --partitions 3 --replication-factor 3
+#   docker compose run --rm cli produce --topic demo --key k1 --acks all hello
+#   docker compose run --rm cli consume --topic demo --partition 0 --from-beginning
+#   docker compose down -v                      # stop and delete all data
+#
+# Brokers advertise their compose service names (broker1..3), so clients run inside this
+# network — the `cli` service — rather than from the host.
+
+x-broker: &broker
+  image: minikafka:latest
+  pull_policy: never
+  restart: unless-stopped
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9092"]
+    interval: 3s
+    timeout: 2s
+    retries: 20
+    start_period: 5s
+
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    restart: unless-stopped
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,srvr"
+      ZOO_ADMINSERVER_ENABLED: "false"
+    volumes:
+      - zk-data:/data
+      - zk-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "zkServer.sh status"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  broker1:
+    <<: *broker
+    # Only this service builds the image; the others reuse it (parallel Gradle builds would
+    # exhaust small Docker VMs).
+    build: .
+    pull_policy: build
+    command: ["server", "--broker-id", "1", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker1", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker1-data:/data
+
+  broker2:
+    <<: *broker
+    command: ["server", "--broker-id", "2", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker2", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker2-data:/data
+
+  broker3:
+    <<: *broker
+    command: ["server", "--broker-id", "3", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker3", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker3-data:/data
+
+  # One-shot client: `docker compose run --rm cli <subcommand> ...`. minikafka-cli adds
+  # --bootstrap $MINIKAFKA_BOOTSTRAP unless you pass --bootstrap/--host yourself.
+  cli:
+    image: minikafka:latest
+    pull_policy: never
+    profiles: ["cli"]
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+    environment:
+      MINIKAFKA_BOOTSTRAP: "broker1:9092,broker2:9092,broker3:9092"
+    entrypoint: ["minikafka-cli"]
+
+volumes:
+  zk-data:
+  zk-datalog:
+  broker1-data:
+  broker2-data:
+  broker3-data:

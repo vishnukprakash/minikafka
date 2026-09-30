@@ -60,6 +60,26 @@ done
 the cluster from any one broker's `METADATA` response and routes each request to the partition's
 current leader.
 
+## Quick start with Docker
+
+`docker-compose.yml` runs ZooKeeper (the official `zookeeper:3.9` image) and three minikafka
+brokers built from the `Dockerfile` (RF 3, `min.insync.replicas` 2). The brokers advertise their
+service names (`broker1..3`), so clients run inside the compose network via the `cli` service:
+
+```bash
+docker compose up -d --build --wait           # build the image, start zookeeper + 3 brokers, wait until healthy
+docker compose run --rm cli topics create --topic orders --partitions 3 --replication-factor 3
+docker compose run --rm cli topics describe --topic orders
+docker compose run --rm cli produce --topic orders --key order-1 --acks all '{"orderId":1}'
+docker compose run --rm cli consume --topic orders --partition 0 --from-beginning
+docker compose stop broker1                   # simulate a broker failure, then `topics describe` again
+docker compose down -v                        # stop everything and delete all data
+```
+
+The `cli` service adds `--bootstrap broker1:9092,broker2:9092,broker3:9092` automatically. The
+image build is tuned for small Docker VMs (for example Colima's 2 GiB default): only `broker1`
+builds the image, and Gradle runs with bounded heaps and an in-process Kotlin compiler.
+
 ## CLI
 
 ```bash

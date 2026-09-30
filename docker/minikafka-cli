@@ -1,0 +1,24 @@
+#!/bin/sh
+# Runs a minikafka client subcommand with --bootstrap taken from $MINIKAFKA_BOOTSTRAP, unless the
+# caller passed --bootstrap/--host itself. The flag is inserted right after the subcommand because
+# `produce` requires its value to be the last argument.
+set -e
+
+for arg in "$@"; do
+    case "$arg" in
+        --bootstrap|--host) exec minikafka "$@" ;;
+    esac
+done
+
+if [ -z "$MINIKAFKA_BOOTSTRAP" ] || [ $# -eq 0 ]; then
+    exec minikafka "$@"
+fi
+
+cmd=$1
+shift
+if [ "$cmd" = "topics" ] && [ $# -gt 0 ]; then
+    sub=$1
+    shift
+    exec minikafka topics "$sub" --bootstrap "$MINIKAFKA_BOOTSTRAP" "$@"
+fi
+exec minikafka "$cmd" --bootstrap "$MINIKAFKA_BOOTSTRAP" "$@"

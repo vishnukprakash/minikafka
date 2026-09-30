@@ -1,0 +1,9 @@
+.git
+.gradle
+.kotlin
+.idea
+.cluster
+.superpowers
+build
+data
+*.iml
